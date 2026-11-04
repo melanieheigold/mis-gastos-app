@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL } from './config.js?v=5';
+import { API_URL } from './config.js?v=6';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-03 · v5';
+const VERSION = '2026-11-03 · v6';
 
 const TOKEN_KEY = 'mg-token';
 const CACHE_KEY = 'mg-cache-v1:'; // + cycle → last good response, for offline
@@ -79,6 +79,7 @@ function cardName(card) {
 }
 function subLabel(e) {
   if (e.kind === 'card-payment') return 'Pago a la tarjeta';
+  if (e.kind === 'other-card') return 'Tarjeta adicional · no cuenta';
   if (!e.category) return 'Sin categoría';
   if (e.category === 'SUPER' && e.sub === 'Super Base') return 'Súper';
   return e.sub || cap(e.category.toLowerCase());
@@ -263,7 +264,7 @@ function movimientos(d) {
       const inner = `
           <div class="avatar" aria-hidden="true">${esc(name.charAt(0) || '·')}</div>
           <div class="mov-text"><span class="mov-name">${esc(name)}</span><span class="mov-meta ${e.kind === 'spend' && !e.category ? 'over-text' : ''}">${tag ? `${tag.replace('class="tag"', 'class="tag first"')} ` : ''}${esc(meta)}</span></div>
-          <span class="mov-amt ${e.kind === 'card-payment' ? 'muted' : ''}">${esc(money(e))}</span>`;
+          <span class="mov-amt ${e.kind !== 'spend' ? 'muted' : ''}">${esc(money(e))}</span>`;
       if (!e.shop) return `<div class="item mov">${inner}</div>`;
       return `<button type="button" class="item mov tappable" data-act="edit" data-shop="${esc(e.shop)}" data-name="${esc(name)}" data-category="${esc(e.category)}" data-sub="${esc(e.sub)}" aria-label="${esc(`${name}, ${subLabel(e)}. Cambiar categoría`)}">${inner}</button>`;
     }).join('');
