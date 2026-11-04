@@ -1,7 +1,7 @@
 // Keeps the app shell available offline. Data is never cached here: app.js keeps the
 // last good API response itself, so a stale shell can never show stale totals as fresh.
 
-const SHELL = 'mg-shell-v1';
+const SHELL = 'mg-shell-v2';
 const FILES = ['./', 'index.html', 'app.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {

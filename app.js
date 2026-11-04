@@ -10,7 +10,7 @@ const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false };
+const state = { tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '' };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -242,18 +242,18 @@ function movimientos(d) {
         : '';
       const name = prettyName(e.description);
       const meta = [subLabel(e), cardName(e.card)].filter(Boolean).join(' · ');
-      return `
-        <div class="item mov">
+      const inner = `
           <div class="avatar" aria-hidden="true">${esc(name.charAt(0) || '·')}</div>
-          <div class="mov-text"><span class="mov-name">${esc(name)}</span><span class="mov-meta">${tag ? `${tag.replace('class="tag"', 'class="tag first"')} ` : ''}${esc(meta)}</span></div>
-          <span class="mov-amt ${e.kind === 'card-payment' ? 'muted' : ''}">${esc(money(e))}</span>
-        </div>`;
+          <div class="mov-text"><span class="mov-name">${esc(name)}</span><span class="mov-meta ${e.kind === 'spend' && !e.category ? 'over-text' : ''}">${tag ? `${tag.replace('class="tag"', 'class="tag first"')} ` : ''}${esc(meta)}</span></div>
+          <span class="mov-amt ${e.kind === 'card-payment' ? 'muted' : ''}">${esc(money(e))}</span>`;
+      if (!e.shop) return `<div class="item mov">${inner}</div>`;
+      return `<button type="button" class="item mov tappable" data-act="edit" data-shop="${esc(e.shop)}" data-name="${esc(name)}" data-category="${esc(e.category)}" data-sub="${esc(e.sub)}" aria-label="${esc(`${name}, ${subLabel(e)}. Cambiar categoría`)}">${inner}</button>`;
     }).join('');
     return `<div class="section"><div class="group-label"><span>${esc(dayLabel(date))}</span><span>${esc(total)}</span></div><div class="card">${rows}</div></div>`;
   }).join('');
   return `
     ${header('Movimientos', `${cap(monthName(d.cycle))} · ${d.entries.length} movimientos`)}
-    ${groups || '<div class="card"><div class="item note">Todavía no hay movimientos en este ciclo.</div></div>'}
+    ${groups ? '<div class="footer-note">Tocá una compra para cambiar su categoría.</div>' + groups : '<div class="card"><div class="item note">Todavía no hay movimientos en este ciclo.</div></div>'}
     ${syncLine(d)}`;
 }
 
@@ -321,6 +321,71 @@ function recurrentes(d) {
     ${syncLine(d)}`;
 }
 
+// ---------- category corrections ----------
+
+const SUB_LABELS = { 'Super Base': 'Súper', Telefono: 'Teléfono', 'Carro Mantenimiento': 'Mantenimiento' };
+const CAT_LABELS = { FIJOS: 'Fijos', SUPER: 'Súper', CARRO: 'Carro', PERSONAL: 'Personal', SOCIAL: 'Social', SALUD: 'Salud', MASCOTA: 'Mascota', TRABAJO: 'Trabajo', AHORRO: 'Ahorro' };
+
+function sheetHtml() {
+  const ed = state.edit;
+  const taxonomy = (state.data && state.data.taxonomy) || {};
+  const groups = Object.entries(taxonomy).map(([cat, subs]) => `
+    <div class="pick-group">
+      <div class="group-label"><span>${esc(CAT_LABELS[cat] || cat)}</span></div>
+      <div class="pick-row">${subs.map((sub) => {
+        const current = ed.category === cat && ed.sub === sub;
+        return `<button type="button" class="pick ${current ? 'current' : ''}" data-act="pick" data-category="${esc(cat)}" data-sub="${esc(sub)}" ${state.saving ? 'disabled' : ''} aria-pressed="${current}">${esc(SUB_LABELS[sub] || sub)}</button>`;
+      }).join('')}</div>
+    </div>`).join('');
+  return `
+    <div class="backdrop" data-act="close"></div>
+    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div class="sheet-head">
+        <div>
+          <h2 id="sheet-title">${esc(ed.name)}</h2>
+          <p class="note">Se aplica a todas las compras en este comercio, también a las anteriores.</p>
+        </div>
+        <button type="button" class="icon-btn" data-act="close" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      ${ed.error ? `<p class="pill warn">${esc(ed.error)}</p>` : ''}
+      ${state.saving ? '<p class="note">Guardando…</p>' : ''}
+      <div class="sheet-body">${groups}</div>
+    </section>`;
+}
+
+function renderOverlay() {
+  let $o = document.getElementById('overlay');
+  if (!$o) { $o = document.createElement('div'); $o.id = 'overlay'; document.body.appendChild($o); }
+  $o.innerHTML = (state.edit ? sheetHtml() : '') + (state.toast ? `<div class="toast" role="status">${esc(state.toast)}</div>` : '');
+  document.body.classList.toggle('locked', !!state.edit);
+}
+
+async function saveCorrection(category, sub) {
+  const ed = state.edit;
+  state.saving = true;
+  ed.error = '';
+  renderOverlay();
+  try {
+    // text/plain keeps this a simple request (no CORS preflight, which Apps Script can't answer)
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ token: load(TOKEN_KEY), action: 'correct', shop: ed.shop, category, sub }),
+    });
+    const out = await res.json();
+    if (!out.ok) throw new Error(out.error === 'unauthorized' ? 'El código de acceso ya no es válido.' : out.error);
+    state.edit = null;
+    state.toast = `${ed.name} → ${SUB_LABELS[sub] || sub}`;
+    setTimeout(() => { state.toast = ''; renderOverlay(); }, 2600);
+    refresh();
+  } catch (err) {
+    ed.error = err instanceof TypeError ? 'Sin conexión. Probá de nuevo.' : `No se pudo guardar: ${err.message}`;
+  } finally {
+    state.saving = false;
+    renderOverlay();
+  }
+}
+
 function setupScreen(message) {
   return `
     <div class="center">
@@ -350,6 +415,7 @@ function render() {
   }
   const view = { inicio, movimientos, presupuesto, recurrentes }[state.tab];
   $screen.innerHTML = view(d);
+  renderOverlay();
 }
 
 // ---------- events ----------
@@ -365,8 +431,20 @@ document.addEventListener('click', (ev) => {
   }
   const act = ev.target.closest('[data-act]');
   if (!act || act.disabled) return;
-  if (act.dataset.act === 'prev') state.cycle = addMonths(state.cycle, -1);
-  if (act.dataset.act === 'next' && state.cycle < state.current) state.cycle = addMonths(state.cycle, 1);
+  const a = act.dataset.act;
+  if (a === 'edit') {
+    state.edit = { shop: act.dataset.shop, name: act.dataset.name, category: act.dataset.category, sub: act.dataset.sub, error: '' };
+    renderOverlay();
+    return;
+  }
+  if (a === 'close') { if (!state.saving) { state.edit = null; renderOverlay(); } return; }
+  if (a === 'pick') {
+    if (act.dataset.category === state.edit.category && act.dataset.sub === state.edit.sub) { state.edit = null; renderOverlay(); return; }
+    saveCorrection(act.dataset.category, act.dataset.sub);
+    return;
+  }
+  if (a === 'prev') state.cycle = addMonths(state.cycle, -1);
+  if (a === 'next' && state.cycle < state.current) state.cycle = addMonths(state.cycle, 1);
   refresh();
 });
 
@@ -381,6 +459,10 @@ document.addEventListener('submit', (ev) => {
 });
 
 window.addEventListener('hashchange', () => takeTokenFromLink() && refresh());
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && state.edit && !state.saving) { state.edit = null; renderOverlay(); }
+});
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
