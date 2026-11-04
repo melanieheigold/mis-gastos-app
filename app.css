@@ -193,3 +193,15 @@ body.locked { overflow: hidden; }
   bottom: calc(env(safe-area-inset-bottom) + 84px); max-width: calc(100% - 32px);
   background: var(--text); color: var(--bg); padding: 12px 18px; border-radius: 14px; font-size: 15px; font-weight: 600;
 }
+
+/* "En qué se fue": category rows that open to their subcategories */
+.cat-btn { all: unset; display: flex; flex-direction: column; gap: 8px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.cat-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 8px; }
+.cat-btn .row { font-size: 15px; }
+.cat-btn .bar { display: block; }
+.cat-name { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+.chev { width: 14px; height: 14px; fill: none; stroke: var(--muted); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
+.chev.open { transform: rotate(90deg); }
+.pct { font-weight: 500; margin-left: 4px; }
+.subs { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 2px 20px; }
+.sub-row { font-size: 14px; color: var(--muted); }

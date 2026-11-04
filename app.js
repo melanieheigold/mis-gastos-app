@@ -10,7 +10,7 @@ const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '' };
+const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '' };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -193,21 +193,36 @@ function inicio(d) {
     rows.push(`<div class="row"><span>Dólares <span class="note">${usd(s.spend.USD)}${rate ? ` × ${(rate / 100).toLocaleString('en-US')}` : ''}</span></span><b>${s.usdInCrc === null ? '—' : crc(-s.usdInCrc)}</b></div>`);
   }
 
-  // where it went: by subcategory, CRC-equivalent
-  const by = new Map();
+  // where it went: every category (so the rows add up to the total), tap for subcategories
+  const groups = new Map();
   for (const e of d.entries) {
     if (e.kind !== 'spend') continue;
-    const k = subLabel(e);
-    by.set(k, (by.get(k) || 0) + crcValue(e, rate));
+    const cat = e.category || '';
+    const g = groups.get(cat) || { total: 0, subs: new Map() };
+    const v = crcValue(e, rate);
+    g.total += v;
+    const sub = subLabel(e);
+    g.subs.set(sub, (g.subs.get(sub) || 0) + v);
+    groups.set(cat, g);
   }
-  const top = [...by.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
-  const total = top.reduce((n, [, v]) => n + v, 0);
-  const max = top.length ? top[0][1] : 1;
-  const topRows = top.slice(0, 6).map(([k, v]) => `
+  const sorted = [...groups.entries()].sort((a, b) => b[1].total - a[1].total);
+  const total = sorted.reduce((n, [, g]) => n + g.total, 0);
+  const max = Math.max(1, ...sorted.map(([, g]) => g.total));
+  const pct = (v) => (total > 0 ? `${Math.round((v / total) * 100)}%` : '');
+  const topRows = sorted.map(([cat, g]) => {
+    const label = cat ? CAT_LABELS[cat] || cat : 'Sin categoría';
+    const open = state.open.has(cat);
+    const subs = [...g.subs.entries()].sort((a, b) => b[1] - a[1]);
+    const detail = open ? `<div class="subs">${subs.map(([s, v]) => `<div class="row sub-row"><span>${esc(SUB_LABELS[s] || s)}</span><span>${crc(v)}</span></div>`).join('')}</div>` : '';
+    return `
     <div class="item">
-      <div class="row"><span>${esc(k)}</span><b>${crc(v)}</b></div>
-      <div class="bar"><i style="width:${Math.max(2, Math.round((v / max) * 100))}%"></i></div>
-    </div>`).join('');
+      <button type="button" class="cat-btn" data-act="toggle" data-cat="${esc(cat)}" aria-expanded="${open}">
+        <span class="row"><span class="cat-name ${cat ? '' : 'over-text'}"><svg class="chev ${open ? 'open' : ''}" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>${esc(label)}</span><b>${crc(g.total)} <span class="note pct">${pct(g.total)}</span></b></span>
+        <span class="bar"><i style="width:${Math.max(2, Math.round((Math.max(0, g.total) / max) * 100))}%"></i></span>
+      </button>
+      ${detail}
+    </div>`;
+  }).join('');
 
   return `
     ${header(cap(monthName(d.cycle)), `Ciclo ${shortDate(d.range[0])} – ${shortDate(d.range[1])}`)}
@@ -324,7 +339,8 @@ function recurrentes(d) {
 // ---------- category corrections ----------
 
 const SUB_LABELS = { 'Super Base': 'Súper', Telefono: 'Teléfono', 'Carro Mantenimiento': 'Mantenimiento' };
-const CAT_LABELS = { FIJOS: 'Fijos', SUPER: 'Súper', CARRO: 'Carro', PERSONAL: 'Personal', SOCIAL: 'Social', SALUD: 'Salud', MASCOTA: 'Mascota', TRABAJO: 'Trabajo', AHORRO: 'Ahorro' };
+// Inicio groups by category; Tasa 0 has its own name.
+const CAT_LABELS = { 'Tasa 0': 'Tasa 0', FIJOS: 'Fijos', SUPER: 'Súper', CARRO: 'Carro', PERSONAL: 'Personal', SOCIAL: 'Social', SALUD: 'Salud', MASCOTA: 'Mascota', TRABAJO: 'Trabajo', AHORRO: 'Ahorro' };
 
 function sheetHtml() {
   const ed = state.edit;
@@ -441,6 +457,12 @@ document.addEventListener('click', (ev) => {
   if (a === 'pick') {
     if (act.dataset.category === state.edit.category && act.dataset.sub === state.edit.sub) { state.edit = null; renderOverlay(); return; }
     saveCorrection(act.dataset.category, act.dataset.sub);
+    return;
+  }
+  if (a === 'toggle') {
+    const cat = act.dataset.cat;
+    if (state.open.has(cat)) state.open.delete(cat); else state.open.add(cat);
+    render();
     return;
   }
   if (a === 'prev') state.cycle = addMonths(state.cycle, -1);
