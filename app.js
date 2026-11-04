@@ -2,7 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL } from './config.js';
+import { API_URL } from './config.js?v=5';
+
+// Shown at the bottom of Inicio so we can tell which version a phone is running.
+const VERSION = '2026-11-03 · v5';
 
 const TOKEN_KEY = 'mg-token';
 const CACHE_KEY = 'mg-cache-v1:'; // + cycle → last good response, for offline
@@ -169,7 +172,7 @@ function statusPill(d) {
 }
 
 function syncLine(d) {
-  const bits = [];
+  const bits = [VERSION];
   if (state.offline) bits.push('Sin conexión: datos guardados');
   if (d.lastSync) bits.push(`Correos revisados ${ago(d.lastSync.runAt)}`);
   if (d.lastSync && d.lastSync.error) bits.push('⚠ el último intento falló');
@@ -512,6 +515,16 @@ function takeTokenFromLink() {
   if (TABS.includes(savedTab)) state.tab = savedTab;
   state.current = todayCycle();
   state.cycle = state.current;
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    // updateViaCache 'none': check sw.js on GitHub itself, never a cached copy. When a new
+    // version takes over, reload once so the new files show without a second reopen.
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!reloaded && navigator.serviceWorker.controller) { reloaded = true; location.reload(); }
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+      .then((reg) => document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); }))
+      .catch(() => {});
+  }
   refresh();
 })();
