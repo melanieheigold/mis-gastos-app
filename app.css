@@ -170,19 +170,25 @@ button.item:active { opacity: 0.6; }
 body.locked { overflow: hidden; }
 .backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.35); }
 .sheet {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; max-width: 560px; margin: 0 auto;
-  max-height: 85vh; display: flex; flex-direction: column; gap: 10px;
+  /* nearly full height and anchored to the top, so a form's fields sit above the keyboard */
+  position: fixed; left: 0; right: 0; bottom: 0; top: calc(env(safe-area-inset-top) + 28px); z-index: 21;
+  max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px;
   background: var(--bg); border-radius: 22px 22px 0 0;
-  padding: 18px 16px calc(env(safe-area-inset-bottom) + 16px);
+  padding: 16px 16px calc(env(safe-area-inset-bottom) + 16px);
   box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.18);
 }
-.sheet-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-.sheet-head p { margin: 4px 0 0; }
-.sheet-body { overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
-.pick-group { display: flex; flex-direction: column; gap: 8px; }
+.sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.sheet-title { flex: 1 1 auto; min-width: 0; }
+.sheet-title h2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.center-title { text-align: center; }
+.sheet-head p { margin: 2px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sheet-body { flex: 1 1 auto; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
+/* each group is its own card, so the list reads as groups instead of a wall of buttons */
+.pick-group { display: flex; flex-direction: column; gap: 10px; background: var(--card); border-radius: 18px; padding: 12px 12px 14px; }
+.pick-label { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; color: var(--muted); padding: 0 2px; }
 .pick-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .pick {
-  min-height: 44px; padding: 0 16px; border-radius: 22px; border: 0; background: var(--card); color: var(--text);
+  min-height: 44px; padding: 0 15px; border-radius: 22px; border: 0; background: var(--track); color: var(--text);
   font-size: 15px; font-weight: 500; cursor: pointer;
 }
 .pick.current { background: var(--accent); color: #fff; font-weight: 600; }
@@ -213,19 +219,27 @@ button.card.review { flex-direction: row; align-items: center; justify-content: 
 .review .chev { width: 18px; height: 18px; flex: 0 0 auto; stroke: var(--over); }
 .btn.quiet { background: var(--card); color: var(--accent); }
 
-/* new category form in the picker */
-.pick.add { background: transparent; color: var(--accent); border: 1.5px dashed var(--accent); font-weight: 600; }
-.newcat { display: flex; flex-direction: column; gap: 8px; padding: 2px 3px 3px; } /* room for the focus ring inside the scrolling sheet */
-.newcat .lbl { font-size: 13px; color: var(--muted); padding: 0 4px; }
-select.field {
-  appearance: none; -webkit-appearance: none; padding-right: 40px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a93' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 12px center; background-size: 18px;
+/* the "new category" row at the top of the picker, and the new-category screen */
+.add-row {
+  flex: 0 0 auto; min-height: 48px; border-radius: 16px; border: 1.5px dashed var(--accent); background: transparent;
+  color: var(--accent); font: inherit; font-size: 16px; font-weight: 600; cursor: pointer;
 }
+.add-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pick.add { background: transparent; color: var(--accent); border: 1.5px dashed var(--accent); font-weight: 600; }
+.pick.add.current { background: var(--accent); color: #fff; border-style: solid; }
+.newcat { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding: 2px; }
+.newcat .lbl { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; color: var(--muted); padding: 6px 2px 0; }
+.newcat .pick { background: var(--card); }
+.newcat .pick.current { background: var(--accent); }
+.newcat .btn { margin-top: 8px; }
+
 .field[hidden] { display: none; }
 
 /* dark mode: dark text on the light-blue accent, for contrast */
 @media (prefers-color-scheme: dark) {
-  .btn, .pick.current { color: #001a33; }
+  .btn, .pick.current, .pick.add.current { color: #001a33; }
   .btn.quiet { color: var(--accent); }
 }
+.sheet-body, .newcat { scrollbar-width: none; }
+.sheet-body::-webkit-scrollbar, .newcat::-webkit-scrollbar { display: none; }
+.sheet { border-top: 1px solid var(--line); }

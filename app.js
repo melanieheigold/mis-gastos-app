@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=9';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=10';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-03 · v9';
+const VERSION = '2026-11-03 · v10';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine
@@ -419,45 +419,71 @@ const CAT_LABELS = { 'Tasa 0': 'Tasa 0', SUPER: 'Súper', DIVERSION: 'Diversión
 /** Categories are stored in capitals (`TRANSPORTE`) and shown as words (`Transporte`). */
 const catLabel = (cat) => CAT_LABELS[cat] || cap(cat.toLowerCase());
 
+const ICON_CLOSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+const ICON_BACK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
+
+/** The category sheet has two screens: pick one, or (from the button at the top) make one. */
 function sheetHtml() {
   const ed = state.edit;
   const taxonomy = (state.data && state.data.taxonomy) || {};
-  const groups = Object.entries(taxonomy).map(([cat, subs]) => `
-    <div class="pick-group">
-      <div class="group-label"><span>${esc(catLabel(cat))}</span></div>
-      <div class="pick-row">${subs.map((sub) => {
-        const current = ed.category === cat && ed.sub === sub;
-        return `<button type="button" class="pick ${current ? 'current' : ''}" data-act="pick" data-category="${esc(cat)}" data-sub="${esc(sub)}" ${state.saving ? 'disabled' : ''} aria-pressed="${current}">${esc(SUB_LABELS[sub] || sub)}</button>`;
-      }).join('')}</div>
-    </div>`).join('');
   return `
     <div class="backdrop" data-act="close"></div>
     <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
-      <div class="sheet-head">
-        <div>
-          <h2 id="sheet-title">${esc(ed.name)}</h2>
-          <p class="note">Se aplica a todas las compras en este comercio, también a las anteriores.</p>
-        </div>
-        <button type="button" class="icon-btn" data-act="close" aria-label="Cerrar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
-      </div>
-      ${ed.error ? `<p class="pill warn">${esc(ed.error)}</p>` : ''}
-      ${state.saving ? '<p class="note">Guardando…</p>' : ''}
-      <div class="sheet-body">${groups}${ed.adding ? newCategoryForm(taxonomy) : '<div class="pick-group"><button type="button" class="pick add" data-act="add-cat">+ Nueva categoría</button></div>'}</div>
+      ${ed.adding ? newCategoryScreen(ed, taxonomy) : pickScreen(ed, taxonomy)}
     </section>`;
 }
 
-function newCategoryForm(taxonomy) {
-  const options = Object.keys(taxonomy).map((cat) => `<option value="${esc(cat)}">${esc(catLabel(cat))}</option>`).join('');
+function pickScreen(ed, taxonomy) {
+  const groups = Object.entries(taxonomy).map(([cat, subs]) => `
+    <div class="pick-group">
+      <div class="pick-label">${esc(catLabel(cat))}</div>
+      <div class="pick-row">${subs.map((sub) => {
+        const current = ed.category === cat && ed.sub === sub;
+        return `<button type="button" class="pick ${current ? 'current' : ''}" data-act="pick" data-category="${esc(cat)}" data-sub="${esc(sub)}" aria-pressed="${current}">${esc(SUB_LABELS[sub] || sub)}</button>`;
+      }).join('')}</div>
+    </div>`).join('');
   return `
-    <form id="newcat-form" class="newcat">
-      <div class="group-label"><span>Nueva categoría</span></div>
-      <label class="lbl" for="nc-sub">Nombre</label>
-      <input id="nc-sub" class="field" name="sub" maxlength="40" required autocomplete="off" placeholder="Por ejemplo: Cerámica">
-      <label class="lbl" for="nc-cat">Dentro de</label>
-      <select id="nc-cat" class="field" name="category">${options}<option value="">Un grupo nuevo…</option></select>
-      <input id="nc-new" class="field" name="newcat" maxlength="40" autocomplete="off" placeholder="Nombre del grupo nuevo" aria-label="Nombre del grupo nuevo" hidden>
-      <button class="btn" type="submit">Crear y usar</button>
-    </form>`;
+      <div class="sheet-head">
+        <div class="sheet-title">
+          <h2 id="sheet-title">${esc(ed.name)}</h2>
+          <p class="note">Vale para todas las compras en este comercio.</p>
+        </div>
+        <button type="button" class="icon-btn" data-act="close" aria-label="Cerrar">${ICON_CLOSE}</button>
+      </div>
+      ${ed.error ? `<p class="pill warn">${esc(ed.error)}</p>` : ''}
+      <div class="sheet-body">
+        <button type="button" class="add-row" data-act="add-cat">+ Nueva categoría</button>
+        ${groups}
+      </div>`;
+}
+
+/** Its own screen, with the fields at the top so the iPhone keyboard never covers them. */
+function newCategoryScreen(ed, taxonomy) {
+  const cats = Object.keys(taxonomy);
+  const chosen = cats.includes(ed.category) ? ed.category : cats[0] || '';
+  const chips = cats.map((cat) => `<button type="button" class="pick ${cat === chosen ? 'current' : ''}" data-act="group" data-category="${esc(cat)}" aria-pressed="${cat === chosen}">${esc(catLabel(cat))}</button>`).join('');
+  return `
+      <div class="sheet-head">
+        <button type="button" class="icon-btn" data-act="back" aria-label="Volver a las categorías">${ICON_BACK}</button>
+        <div class="sheet-title center-title">
+          <h2 id="sheet-title">Nueva categoría</h2>
+          <p class="note">Para ${esc(ed.name)}</p>
+        </div>
+        <button type="button" class="icon-btn" data-act="close" aria-label="Cerrar">${ICON_CLOSE}</button>
+      </div>
+      <form id="newcat-form" class="newcat">
+        ${ed.error ? `<p class="pill warn">${esc(ed.error)}</p>` : ''}
+        <label class="lbl" for="nc-sub">Nombre</label>
+        <input id="nc-sub" class="field" name="sub" maxlength="40" required autocomplete="off" enterkeyhint="done" placeholder="Por ejemplo: Cerámica" value="${esc(ed.newSub || '')}">
+        <div class="lbl" id="nc-group-label">Grupo</div>
+        <div class="pick-row" role="group" aria-labelledby="nc-group-label">
+          ${chips}
+          <button type="button" class="pick add ${chosen ? '' : 'current'}" data-act="group" data-category="" aria-pressed="${!chosen}">+ Grupo nuevo</button>
+        </div>
+        <input type="hidden" id="nc-cat" name="category" value="${esc(chosen)}">
+        <input id="nc-new" class="field" name="newcat" maxlength="40" autocomplete="off" placeholder="Nombre del grupo nuevo" aria-label="Nombre del grupo nuevo" ${chosen ? 'hidden' : ''}>
+        <button class="btn" type="submit">Crear y usar</button>
+      </form>`;
 }
 
 /** Same checks as the engine (core newCategory), so the person hears about a problem at once. */
@@ -553,7 +579,8 @@ function render() {
   }
   const view = { inicio, movimientos, presupuesto, recurrentes }[state.tab];
   $screen.innerHTML = view(d);
-  renderOverlay();
+  // a background refresh must not rebuild the form she is typing in (it would drop her text and the keyboard)
+  if (!(state.edit && state.edit.adding)) renderOverlay();
 }
 
 // ---------- events ----------
@@ -578,6 +605,20 @@ document.addEventListener('click', (ev) => {
   }
   if (a === 'close') { if (!state.saving) { state.edit = null; renderOverlay(); } return; }
   if (a === 'add-cat') { state.edit.adding = true; state.edit.error = ''; renderOverlay(); document.getElementById('nc-sub')?.focus(); return; }
+  if (a === 'back') { state.edit.adding = false; state.edit.error = ''; renderOverlay(); return; }
+  if (a === 'group') {
+    // updated in place, not re-rendered, so what she has typed and the keyboard stay put
+    for (const chip of document.querySelectorAll('[data-act="group"]')) {
+      const on = chip === act;
+      chip.classList.toggle('current', on);
+      chip.setAttribute('aria-pressed', String(on));
+    }
+    document.getElementById('nc-cat').value = act.dataset.category;
+    const fresh = document.getElementById('nc-new');
+    fresh.hidden = act.dataset.category !== '';
+    if (!fresh.hidden) fresh.focus();
+    return;
+  }
   if (a === 'review') { state.tab = 'movimientos'; state.filter = 'uncat'; render(); window.scrollTo(0, 0); return; }
   if (a === 'clear-filter') { state.filter = ''; render(); window.scrollTo(0, 0); return; }
   if (a === 'pick') {
@@ -596,16 +637,19 @@ document.addEventListener('click', (ev) => {
   refresh();
 });
 
-document.addEventListener('change', (ev) => {
-  if (ev.target.id === 'nc-cat') document.getElementById('nc-new').hidden = ev.target.value !== '';
-});
-
 document.addEventListener('submit', (ev) => {
   if (ev.target.id === 'newcat-form') {
     ev.preventDefault();
     const f = new FormData(ev.target);
     const checked = checkNewCategory(state.data.taxonomy || {}, String(f.get('category') || f.get('newcat') || ''), String(f.get('sub') || ''));
-    if (checked.error) { state.edit.error = checked.error; renderOverlay(); return; }
+    if (checked.error) {
+      state.edit.error = checked.error;
+      state.edit.newSub = String(f.get('sub') || '');
+      state.edit.category = String(f.get('category') || '');
+      renderOverlay();
+      document.getElementById('nc-sub')?.focus();
+      return;
+    }
     saveCorrection(checked.category, checked.sub, true);
     return;
   }
