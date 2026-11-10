@@ -243,3 +243,17 @@ button.card.review { flex-direction: row; align-items: center; justify-content: 
 .sheet-body, .newcat { scrollbar-width: none; }
 .sheet-body::-webkit-scrollbar, .newcat::-webkit-scrollbar { display: none; }
 .sheet { border-top: 1px solid var(--line); }
+
+/* settings forms and their entry points */
+button.item.tappable { border-bottom: 1px solid var(--line); }
+button.item.tappable:last-child { border-bottom: 0; }
+button.item > span { display: flex; }
+button.item > .bar { display: block; }
+.link-btn { align-self: flex-start; min-height: 44px; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.link-btn.danger { color: var(--over); align-self: center; }
+.link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.amount-row { display: flex; gap: 8px; align-items: center; }
+.amount-row .field { flex: 1 1 auto; min-width: 0; }
+.amount-row .pick-row { flex: 0 0 auto; flex-wrap: nowrap; gap: 6px; }
+.amount-row .pick { min-width: 48px; padding: 0 12px; font-weight: 600; }
+.newcat p.note { margin: 0; padding: 0 2px; }

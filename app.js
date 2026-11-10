@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=10';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=11';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-03 · v10';
+const VERSION = '2026-11-09 · v11';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine
@@ -14,7 +14,7 @@ const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '' };
+const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', form: null };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -211,7 +211,8 @@ function inicio(d) {
   let hero;
   if (s.teSobra === null) {
     const falta = s.missing.map((m) => (m === 'income' ? 'el salario' : 'el tipo de cambio')).join(' y ');
-    hero = `<div class="hero missing">Falta ${esc(falta)} de ${esc(monthName(d.cycle))} en la hoja (pestaña Cycles).</div>`;
+    hero = `<div class="hero missing">Falta ${esc(falta)} de ${esc(monthName(d.cycle))}.</div>
+      <button type="button" class="btn" data-act="edit-cycle" style="margin-top:12px;width:100%">Agregar</button>`;
   } else {
     hero = `<div class="hero ${s.teSobra < 0 ? 'neg' : ''}">${crc(s.teSobra)}</div>`;
   }
@@ -261,6 +262,7 @@ function inicio(d) {
       <div class="sep"></div>
       <div style="display:flex;flex-direction:column;gap:12px">${rows.join('')}</div>
       <div class="note">Incluye gastos fijos y cuotas. No incluye SINPE ni efectivo.</div>
+      ${s.teSobra === null ? '' : '<button type="button" class="link-btn" data-act="edit-cycle">Cambiar salario o tipo de cambio</button>'}
     </section>
     ${reviewCard(d)}
     <section class="section">
@@ -354,15 +356,16 @@ function presupuesto(d) {
     const pct = b.limit > 0 ? Math.min(100, Math.round((b.spent / b.limit) * 100)) : 100;
     const note = over ? `Te pasaste ${crc(b.spent - b.limit)}` : `Quedan ${crc(b.limit - b.spent)}`;
     return `
-      <div class="item">
-        <div class="row"><b style="font-weight:600">${esc(b.name)}</b><span class="note ${over ? 'over-text' : ''}" style="font-weight:600">${esc(note)}</span></div>
-        <div class="bar thick ${over ? 'over' : ''}"><i style="width:${Math.max(2, pct)}%"></i></div>
-        <div class="small"><span>${crc(b.spent)} gastado</span><span>de ${crc(b.limit)}</span></div>
-      </div>`;
+      <button type="button" class="item tappable" data-act="edit-budget" data-match="${esc(b.match)}" aria-label="${esc(`${b.name}: ${note}. Cambiar`)}">
+        <span class="row"><b style="font-weight:600">${esc(b.name)}</b><span class="note ${over ? 'over-text' : ''}" style="font-weight:600">${esc(note)}</span></span>
+        <span class="bar thick ${over ? 'over' : ''}"><i style="width:${Math.max(2, pct)}%"></i></span>
+        <span class="small"><span>${crc(b.spent)} gastado</span><span>de ${crc(b.limit)}</span></span>
+      </button>`;
   }).join('');
   return `
-    ${header('Presupuesto', `${cap(monthName(d.cycle))} · límites de tu hoja`)}
-    <div class="card">${rows || '<div class="item note">No hay presupuestos todavía (pestaña Budgets).</div>'}</div>
+    ${header('Presupuesto', `${cap(monthName(d.cycle))} · tocá para cambiar`)}
+    <button type="button" class="add-row" data-act="edit-budget" data-match="">+ Nuevo presupuesto</button>
+    ${rows ? `<div class="card">${rows}</div>` : '<div class="card"><div class="item note">Todavía no hay presupuestos. Creá el primero con el botón de arriba.</div></div>'}
     <div class="footer-note">Los dólares cuentan al tipo de cambio del mes.</div>
     ${syncLine(d)}`;
 }
@@ -375,7 +378,17 @@ function recurrentes(d) {
     const meta = c ? `Cuota ${c[0]} de ${c[1]} · ${c[0] === c[1] ? 'es la última' : `termina en ${monthName(end)}`}` : 'Cuota';
     return { name: prettyName(e.description), meta, amount: money(e), pct: c ? Math.round((c[0] / c[1]) * 100) : null };
   });
-  const fixed = d.entries.filter((e) => e.source === 'fixed').map((e) => ({ name: prettyName(e.description), meta: 'Fijo, cada mes', amount: money(e), pct: null }));
+  const fixedRows = d.entries.filter((e) => e.source === 'fixed').map((e) => `
+        <button type="button" class="item tappable" style="gap:6px" data-act="edit-fixed" data-desc="${esc(e.description)}" aria-label="${esc(`${e.description}, ${money(e)}. Cambiar`)}">
+          <span class="row"><span style="font-weight:500">${esc(e.description)}</span><b>${esc(money(e))}</b></span>
+          <span class="note">${esc(subLabel(e))} · cada mes</span>
+        </button>`).join('');
+  const fixedSection = `
+    <div class="section">
+      <div class="group-label"><span>Fijos</span></div>
+      ${fixedRows ? `<div class="card">${fixedRows}</div>` : ''}
+      <button type="button" class="add-row" data-act="edit-fixed" data-desc="">+ Gasto fijo</button>
+    </div>`;
 
   // subscriptions and services: merge each IVA line into its subscription
   const SUBS = ['Suscripciones', 'Telefono', 'Seguro', 'Indoor'];
@@ -404,10 +417,9 @@ function recurrentes(d) {
           ${r.pct === null ? '' : `<div class="bar"><i style="width:${r.pct}%"></i></div>`}
         </div>`).join('')}</div>
     </div>`;
-  const body = group('Tasa 0', cuotas) + group('Fijos', fixed) + group('Suscripciones y servicios', subRows);
   return `
     ${header('Recurrentes', `${cap(monthName(cycle))} · cada mes`)}
-    ${body || '<div class="card"><div class="item note">Nada recurrente en este ciclo todavía.</div></div>'}
+    ${group('Tasa 0', cuotas)}${fixedSection}${group('Suscripciones y servicios', subRows)}
     ${syncLine(d)}`;
 }
 
@@ -498,11 +510,184 @@ function checkNewCategory(taxonomy, category, sub) {
   return { category: cat, sub: s };
 }
 
+// ---------- settings: salary and rate, budgets, fixed expenses ----------
+
+/** Minor units as a person would type them back: 180000000 → `1,800,000`, 50650 → `506.5`. */
+const typedAmount = (minor) => (minor === null || minor === undefined ? '' : (minor / 100).toLocaleString('en-US', { maximumFractionDigits: 2 }));
+
+/** Same rules as the engine's parseTyped (core/src/money.ts): accepts 1,800,000 · 1.800.000 · 506,5 · 506.50. */
+function parseTyped(text) {
+  const s = String(text).replace(/[₡$\s]/g, '');
+  if (!/^\d[\d.,]*$/.test(s) && !/^[.,]\d{1,2}$/.test(s)) return null;
+  const seps = s.replace(/\d/g, '');
+  let decimalAt = -1;
+  if (seps.length) {
+    const last = Math.max(s.lastIndexOf(','), s.lastIndexOf('.'));
+    const sameKind = seps.split('').every((c) => c === seps[0]);
+    if (!(sameKind && (seps.length > 1 || s.length - last - 1 === 3))) decimalAt = last;
+    if (!sameKind && seps.split(s[last]).length !== 2) return null;
+  }
+  const units = (decimalAt < 0 ? s : s.slice(0, decimalAt)).replace(/[.,]/g, '');
+  const cents = decimalAt < 0 ? '' : s.slice(decimalAt + 1);
+  if (cents.length > 2 || /[.,]/.test(cents)) return null;
+  const minor = Number(units || 0) * 100 + Number(cents.padEnd(2, '0') || 0);
+  return Number.isSafeInteger(minor) ? minor : null;
+}
+
+function categoryOptions(taxonomy, selected, { groups = false, taken = [] } = {}) {
+  return Object.entries(taxonomy).map(([cat, subs]) => {
+    const opt = (value, label) => (taken.includes(value) && value !== selected ? '' : `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(label)}</option>`);
+    return `<optgroup label="${esc(catLabel(cat))}">${groups ? opt(cat, `Todo ${catLabel(cat)}`) : ''}${subs.map((s) => opt(`${cat}/${s}`, SUB_LABELS[s] || s)).join('')}</optgroup>`;
+  }).join('');
+}
+
+function formSheetHtml() {
+  const f = state.form;
+  const d = state.data;
+  const month = cap(monthName(state.cycle));
+  let title = '', sub = '', fields = '', extra = '';
+  if (f.kind === 'cycle') {
+    title = month;
+    sub = 'Salario y tipo de cambio';
+    fields = `
+        <label class="lbl" for="f-income">Salario del mes, en colones</label>
+        <input id="f-income" class="field" name="income" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 1,800,000" value="${esc(f.income)}">
+        <label class="lbl" for="f-rate">Tipo de cambio, colones por dólar</label>
+        <input id="f-rate" class="field" name="rate" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 506" value="${esc(f.rate)}">
+        <p class="note">El tipo de cambio es el que usás para pagar los dólares de la tarjeta.</p>`;
+  } else if (f.kind === 'budget') {
+    const isNew = !f.original;
+    title = isNew ? 'Nuevo presupuesto' : f.name;
+    sub = isNew ? 'Un límite por mes' : 'Límite por mes';
+    const taken = (d.budgets || []).map((b) => b.match);
+    fields = `${isNew ? `
+        <label class="lbl" for="f-match">Para</label>
+        <select id="f-match" class="field" name="match">${categoryOptions(d.taxonomy || {}, f.match, { groups: true, taken })}${taken.includes('Tasa 0') ? '' : '<option value="Tasa 0">Tasa 0 (cuotas)</option>'}</select>` : `<input type="hidden" name="match" value="${esc(f.match)}">`}
+        <label class="lbl" for="f-limit">Límite, en colones</label>
+        <input id="f-limit" class="field" name="limit" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 100,000" value="${esc(f.limit)}">`;
+    extra = isNew ? '' : '<button type="button" class="link-btn danger" data-act="remove-setting">Quitar este presupuesto</button>';
+  } else {
+    const isNew = !f.original;
+    title = isNew ? 'Nuevo gasto fijo' : 'Gasto fijo';
+    sub = `Vale desde ${monthName(state.cycle)} en adelante`;
+    fields = `
+        <label class="lbl" for="f-desc">Nombre</label>
+        <input id="f-desc" class="field" name="description" maxlength="40" autocomplete="off" placeholder="Por ejemplo: Alquiler" value="${esc(f.description)}">
+        <label class="lbl" for="f-amount">Monto por mes</label>
+        <div class="amount-row">
+          <input id="f-amount" class="field" name="amount" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 250,000" value="${esc(f.amount)}">
+          <div class="pick-row" role="group" aria-label="Moneda">
+            <button type="button" class="pick ${f.currency === 'CRC' ? 'current' : ''}" data-act="seg" data-value="CRC" aria-pressed="${f.currency === 'CRC'}">₡</button>
+            <button type="button" class="pick ${f.currency === 'USD' ? 'current' : ''}" data-act="seg" data-value="USD" aria-pressed="${f.currency === 'USD'}">$</button>
+          </div>
+          <input type="hidden" name="currency" value="${esc(f.currency)}">
+        </div>
+        <label class="lbl" for="f-cat">Categoría</label>
+        <select id="f-cat" class="field" name="category">${categoryOptions(d.taxonomy || {}, f.category)}</select>`;
+    extra = isNew ? '' : `<button type="button" class="link-btn danger" data-act="remove-setting">Quitar desde ${esc(monthName(state.cycle))}</button>`;
+  }
+  return `
+    <div class="backdrop" data-act="close-form"></div>
+    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="form-title">
+      <div class="sheet-head">
+        <div class="sheet-title">
+          <h2 id="form-title">${esc(title)}</h2>
+          <p class="note">${esc(sub)}</p>
+        </div>
+        <button type="button" class="icon-btn" data-act="close-form" aria-label="Cerrar">${ICON_CLOSE}</button>
+      </div>
+      <form id="setting-form" class="newcat">
+        ${f.error ? `<p class="pill warn">${esc(f.error)}</p>` : ''}
+        ${fields}
+        <button class="btn" type="submit">Guardar</button>
+        ${extra}
+      </form>
+    </section>`;
+}
+
+function openForm(kind, key) {
+  const d = state.data;
+  if (kind === 'cycle') {
+    state.form = { kind, income: typedAmount(d.summary.income), rate: typedAmount(d.summary.rate), error: '' };
+  } else if (kind === 'budget') {
+    const b = (d.budgets || []).find((x) => x.match === key);
+    state.form = b ? { kind, original: b.match, match: b.match, name: b.name, limit: typedAmount(b.limit), error: '' }
+      : { kind, original: '', match: '', name: '', limit: '', error: '' };
+  } else {
+    const e = d.entries.find((x) => x.source === 'fixed' && x.description === key);
+    state.form = e ? { kind, original: e.description, description: e.description, amount: typedAmount(e.minor), currency: e.currency, category: `${e.category}/${e.sub}`, error: '' }
+      : { kind, original: '', description: '', amount: '', currency: 'CRC', category: '', error: '' };
+  }
+  renderOverlay();
+  document.querySelector('#setting-form .field:not([type=hidden])')?.focus();
+}
+
+/** What the form holds now, as the command the engine expects, or an error to show. */
+function readForm(form) {
+  const f = state.form;
+  const v = (k) => String(form.get(k) || '').trim();
+  const amountOk = (s) => s !== '' && parseTyped(s) !== null && parseTyped(s) > 0;
+  if (f.kind === 'cycle') {
+    Object.assign(f, { income: v('income'), rate: v('rate') });
+    if (f.income !== '' && parseTyped(f.income) === null) return { error: 'No entendí el salario. Escribilo solo con números, por ejemplo 1,800,000.' };
+    const rate = f.rate === '' ? null : parseTyped(f.rate);
+    if (f.rate !== '' && (rate === null || rate < 10000 || rate > 200000)) return { error: 'El tipo de cambio debe estar entre 100 y 2,000 colones por dólar.' };
+    return { payload: { action: 'setCycle', cycle: state.cycle, income: f.income, rate: f.rate }, done: 'Guardado' };
+  }
+  if (f.kind === 'budget') {
+    Object.assign(f, { match: v('match'), limit: v('limit') });
+    if (!f.match) return { error: 'Elegí para qué es el presupuesto.' };
+    if (!amountOk(f.limit)) return { error: 'Escribí el límite solo con números, por ejemplo 100,000.' };
+    const name = f.name || (f.match.includes('/') ? f.match.split('/')[1] : catLabel(f.match));
+    return { payload: { action: 'setBudget', match: f.match, name: SUB_LABELS[name] || name, limit: f.limit }, done: 'Presupuesto guardado' };
+  }
+  Object.assign(f, { description: v('description'), amount: v('amount'), currency: v('currency'), category: v('category') });
+  if (!f.description) return { error: 'Ponele un nombre.' };
+  if (!amountOk(f.amount)) return { error: 'Escribí el monto solo con números, por ejemplo 250,000.' };
+  if (!f.category) return { error: 'Elegí una categoría.' };
+  const [category, sub] = f.category.split('/');
+  return { payload: { action: 'setFixed', cycle: state.cycle, description: f.description, original: f.original || f.description, currency: f.currency, amount: f.amount, category, sub }, done: 'Gasto fijo guardado' };
+}
+
+function removalOf(f) {
+  return f.kind === 'budget' ? { payload: { action: 'setBudget', match: f.match, limit: '' }, done: 'Presupuesto quitado' }
+    : { payload: { action: 'removeFixed', cycle: state.cycle, description: f.original }, done: 'Gasto fijo quitado' };
+}
+
+/** Closes the form, saves in the background, then reloads; on failure the form comes back with the reason. */
+async function saveSetting({ payload, done }) {
+  const form = state.form;
+  state.form = null;
+  state.pending += 1;
+  showToast('Guardando…', 15000);
+  let failure = '';
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ token: load(TOKEN_KEY), ...payload }),
+    });
+    const out = await res.json();
+    if (!out.ok) failure = out.error === 'unauthorized' ? 'El código de acceso ya no es válido.' : out.error;
+  } catch {
+    failure = 'No hay conexión. Probá de nuevo.';
+  }
+  state.pending -= 1;
+  if (failure) {
+    state.toast = '';
+    state.form = { ...form, error: failure };
+    renderOverlay();
+  } else {
+    showToast(done);
+    refresh();
+  }
+}
+
 function renderOverlay() {
   let $o = document.getElementById('overlay');
   if (!$o) { $o = document.createElement('div'); $o.id = 'overlay'; document.body.appendChild($o); }
-  $o.innerHTML = (state.edit ? sheetHtml() : '') + (state.toast ? `<div class="toast" role="status">${esc(state.toast)}</div>` : '');
-  document.body.classList.toggle('locked', !!state.edit);
+  $o.innerHTML = (state.edit ? sheetHtml() : state.form ? formSheetHtml() : '') + (state.toast ? `<div class="toast" role="status">${esc(state.toast)}</div>` : '');
+  document.body.classList.toggle('locked', !!(state.edit || state.form));
 }
 
 /**
@@ -580,7 +765,7 @@ function render() {
   const view = { inicio, movimientos, presupuesto, recurrentes }[state.tab];
   $screen.innerHTML = view(d);
   // a background refresh must not rebuild the form she is typing in (it would drop her text and the keyboard)
-  if (!(state.edit && state.edit.adding)) renderOverlay();
+  if (!(state.edit && state.edit.adding) && !state.form) renderOverlay();
 }
 
 // ---------- events ----------
@@ -619,6 +804,17 @@ document.addEventListener('click', (ev) => {
     if (!fresh.hidden) fresh.focus();
     return;
   }
+  if (a === 'edit-cycle') { openForm('cycle'); return; }
+  if (a === 'edit-budget') { openForm('budget', act.dataset.match); return; }
+  if (a === 'edit-fixed') { openForm('fixed', act.dataset.desc); return; }
+  if (a === 'close-form') { state.form = null; renderOverlay(); return; }
+  if (a === 'remove-setting') { saveSetting(removalOf(state.form)); return; }
+  if (a === 'seg') {
+    // currency switch, updated in place so the typed amount and the keyboard stay
+    for (const b of act.parentElement.children) { b.classList.toggle('current', b === act); b.setAttribute('aria-pressed', String(b === act)); }
+    act.closest('.amount-row').querySelector('input[type=hidden]').value = act.dataset.value;
+    return;
+  }
   if (a === 'review') { state.tab = 'movimientos'; state.filter = 'uncat'; render(); window.scrollTo(0, 0); return; }
   if (a === 'clear-filter') { state.filter = ''; render(); window.scrollTo(0, 0); return; }
   if (a === 'pick') {
@@ -653,6 +849,13 @@ document.addEventListener('submit', (ev) => {
     saveCorrection(checked.category, checked.sub, true);
     return;
   }
+  if (ev.target.id === 'setting-form') {
+    ev.preventDefault();
+    const read = readForm(new FormData(ev.target));
+    if (read.error) { state.form.error = read.error; renderOverlay(); return; }
+    saveSetting(read);
+    return;
+  }
   if (ev.target.id !== 'token-form') return;
   ev.preventDefault();
   const token = new FormData(ev.target).get('token').toString().trim();
@@ -667,6 +870,7 @@ window.addEventListener('hashchange', () => takeTokenFromLink() && refresh());
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && state.edit && !state.saving) { state.edit = null; renderOverlay(); }
+  if (ev.key === 'Escape' && state.form) { state.form = null; renderOverlay(); }
 });
 
 document.addEventListener('visibilitychange', () => {
