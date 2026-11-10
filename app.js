@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=7';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=8';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-03 · v7';
+const VERSION = '2026-11-03 · v8';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine
@@ -123,7 +123,7 @@ function todayCycle() {
 async function fetchSnapshot(cycle) {
   const space = load(SPACE_KEY);
   if (!FIREBASE.projectId || !space) return null;
-  const url = `${FIRESTORE_BASE}/projects/${FIREBASE.projectId}/databases/(default)/documents/spaces/${space}/cycles/${cycle}?key=${FIREBASE.apiKey}`;
+  const url = `${FIRESTORE_BASE}/projects/${FIREBASE.projectId}/databases/(default)/documents/spaces/${space}/cycles/${cycle}`;
   try {
     const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) return null;
