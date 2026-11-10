@@ -2,18 +2,19 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL } from './config.js?v=6';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=7';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-03 · v6';
+const VERSION = '2026-11-03 · v7';
 
 const TOKEN_KEY = 'mg-token';
+const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine
 const CACHE_KEY = 'mg-cache-v1:'; // + cycle → last good response, for offline
 const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '' };
+const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0 };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -114,6 +115,27 @@ function todayCycle() {
   return d.getDate() >= 16 ? addMonths(`${y}-${String(m).padStart(2, '0')}`, 1) : `${y}-${String(m).padStart(2, '0')}`;
 }
 
+/**
+ * The engine pushes each cycle's finished result to Firestore; reading it takes a fraction
+ * of a second. Returns null when there is no usable copy (not set up, old cycle, offline),
+ * and the caller falls back to asking the engine itself, which is slow but always right.
+ */
+async function fetchSnapshot(cycle) {
+  const space = load(SPACE_KEY);
+  if (!FIREBASE.projectId || !space) return null;
+  const url = `${FIRESTORE_BASE}/projects/${FIREBASE.projectId}/databases/(default)/documents/spaces/${space}/cycles/${cycle}?key=${FIREBASE.apiKey}`;
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const doc = await res.json();
+    const data = JSON.parse(doc.fields.json.stringValue);
+    if (!data.ok || data.cycle !== cycle) { save(SPACE_KEY, ''); return null; } // blanked: the code was rotated
+    return data;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchCycle(cycle) {
   const token = load(TOKEN_KEY);
   const url = `${API_URL}?token=${encodeURIComponent(token)}&cycle=${encodeURIComponent(cycle)}`;
@@ -133,11 +155,14 @@ async function refresh() {
   state.loading = true;
   render();
   try {
-    const data = await fetchCycle(cycle);
+    const data = (await fetchSnapshot(cycle)) || (await fetchCycle(cycle));
     if (cycle !== state.cycle) return; // user moved on
+    if (state.pending) return; // a correction is being saved: keep what the screen shows
     if (!data.ok) {
       state.error = data.error === 'unauthorized' ? 'unauthorized' : data.error;
     } else {
+      if (data.space) save(SPACE_KEY, data.space);
+      delete data.space;
       state.data = data;
       state.error = null;
       state.offline = false;
@@ -380,11 +405,20 @@ function renderOverlay() {
   document.body.classList.toggle('locked', !!state.edit);
 }
 
+/**
+ * Shows the change at once and saves in the background (the engine takes a few seconds).
+ * If saving fails, the screen goes back to how it was and says so.
+ */
 async function saveCorrection(category, sub) {
   const ed = state.edit;
-  state.saving = true;
-  ed.error = '';
-  renderOverlay();
+  const cycle = state.cycle;
+  const before = JSON.stringify(state.data);
+  for (const e of state.data.entries) if (e.shop === ed.shop) { e.category = category; e.sub = sub; }
+  state.edit = null;
+  state.pending += 1;
+  showToast(`${ed.name} → ${SUB_LABELS[sub] || sub}`);
+  render();
+  let failure = '';
   try {
     // text/plain keeps this a simple request (no CORS preflight, which Apps Script can't answer)
     const res = await fetch(API_URL, {
@@ -393,17 +427,26 @@ async function saveCorrection(category, sub) {
       body: JSON.stringify({ token: load(TOKEN_KEY), action: 'correct', shop: ed.shop, category, sub }),
     });
     const out = await res.json();
-    if (!out.ok) throw new Error(out.error === 'unauthorized' ? 'El código de acceso ya no es válido.' : out.error);
-    state.edit = null;
-    state.toast = `${ed.name} → ${SUB_LABELS[sub] || sub}`;
-    setTimeout(() => { state.toast = ''; renderOverlay(); }, 2600);
-    refresh();
-  } catch (err) {
-    ed.error = err instanceof TypeError ? 'Sin conexión. Probá de nuevo.' : `No se pudo guardar: ${err.message}`;
-  } finally {
-    state.saving = false;
-    renderOverlay();
+    if (!out.ok) failure = out.error === 'unauthorized' ? 'el código de acceso ya no es válido' : out.error;
+  } catch {
+    failure = 'no hay conexión';
   }
+  state.pending -= 1;
+  if (failure) {
+    if (state.cycle === cycle) state.data = JSON.parse(before);
+    showToast(`No se guardó ${ed.name}: ${failure}`, 5000);
+    render();
+  } else {
+    refresh(); // budgets and totals come back recalculated
+  }
+}
+
+let toastTimer = 0;
+function showToast(text, ms = 2600) {
+  state.toast = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { state.toast = ''; renderOverlay(); }, ms);
+  renderOverlay();
 }
 
 function setupScreen(message) {
@@ -480,6 +523,7 @@ document.addEventListener('submit', (ev) => {
   const token = new FormData(ev.target).get('token').toString().trim();
   if (!token) return;
   save(TOKEN_KEY, token);
+  save(SPACE_KEY, ''); // a new code may come with a new space; the engine will say
   state.error = null;
   refresh();
 });

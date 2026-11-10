@@ -1,8 +1,8 @@
 // Keeps the app shell available offline. Data is never cached here: app.js keeps the
 // last good API response itself, so a stale shell can never show stale totals as fresh.
 
-const SHELL = 'mg-shell-v6';
-const FILES = ['./', 'index.html', 'app.css?v=6', 'app.js?v=6', 'config.js?v=6', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+const SHELL = 'mg-shell-v7';
+const FILES = ['./', 'index.html', 'app.css?v=7', 'app.js?v=7', 'config.js?v=7', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
