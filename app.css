@@ -205,3 +205,27 @@ body.locked { overflow: hidden; }
 .pct { font-weight: 500; margin-left: 4px; }
 .subs { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 2px 20px; }
 .sub-row { font-size: 14px; color: var(--muted); }
+
+/* shops without a category: the review card on Inicio and its list */
+button.card.review { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; padding: 16px; border: 0; width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit; background: var(--over-bg); }
+.review-text { display: flex; flex-direction: column; gap: 3px; font-size: 15px; }
+.review-text b { color: var(--over); font-weight: 600; }
+.review .chev { width: 18px; height: 18px; flex: 0 0 auto; stroke: var(--over); }
+.btn.quiet { background: var(--card); color: var(--accent); }
+
+/* new category form in the picker */
+.pick.add { background: transparent; color: var(--accent); border: 1.5px dashed var(--accent); font-weight: 600; }
+.newcat { display: flex; flex-direction: column; gap: 8px; padding: 2px 3px 3px; } /* room for the focus ring inside the scrolling sheet */
+.newcat .lbl { font-size: 13px; color: var(--muted); padding: 0 4px; }
+select.field {
+  appearance: none; -webkit-appearance: none; padding-right: 40px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a93' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center; background-size: 18px;
+}
+.field[hidden] { display: none; }
+
+/* dark mode: dark text on the light-blue accent, for contrast */
+@media (prefers-color-scheme: dark) {
+  .btn, .pick.current { color: #001a33; }
+  .btn.quiet { color: var(--accent); }
+}

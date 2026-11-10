@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=8';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=9';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-03 · v8';
+const VERSION = '2026-11-03 · v9';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine
@@ -14,7 +14,7 @@ const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0 };
+const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '' };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -239,7 +239,7 @@ function inicio(d) {
   const max = Math.max(1, ...sorted.map(([, g]) => g.total));
   const pct = (v) => (total > 0 ? `${Math.round((v / total) * 100)}%` : '');
   const topRows = sorted.map(([cat, g]) => {
-    const label = cat ? CAT_LABELS[cat] || cat : 'Sin categoría';
+    const label = cat ? catLabel(cat) : 'Sin categoría';
     const open = state.open.has(cat);
     const subs = [...g.subs.entries()].sort((a, b) => b[1] - a[1]);
     const detail = open ? `<div class="subs">${subs.map(([s, v]) => `<div class="row sub-row"><span>${esc(SUB_LABELS[s] || s)}</span><span>${crc(v)}</span></div>`).join('')}</div>` : '';
@@ -260,8 +260,9 @@ function inicio(d) {
       ${statusPill(d)}
       <div class="sep"></div>
       <div style="display:flex;flex-direction:column;gap:12px">${rows.join('')}</div>
-      <div class="note">Incluye el préstamo del carro y las cuotas. No incluye SINPE.</div>
+      <div class="note">Incluye gastos fijos y cuotas. No incluye SINPE ni efectivo.</div>
     </section>
+    ${reviewCard(d)}
     <section class="section">
       <div class="section-head"><h2>En qué se fue</h2><span class="note">${crc(total)}</span></div>
       <div class="card">${topRows || '<div class="item note">Todavía no hay gastos en este ciclo.</div>'}</div>
@@ -269,7 +270,52 @@ function inicio(d) {
     ${syncLine(d)}`;
 }
 
+/** Shops with spend but no category, biggest first: the short list worth fixing by hand. */
+function uncategorizedShops(d) {
+  const shops = new Map();
+  for (const e of d.entries) {
+    if (e.kind !== 'spend' || e.category || !e.shop) continue;
+    const s = shops.get(e.shop) || { shop: e.shop, name: prettyName(e.description), n: 0, crc: 0, usd: 0, value: 0 };
+    s.n += 1;
+    s[e.currency === 'CRC' ? 'crc' : 'usd'] += e.minor;
+    s.value += crcValue(e, d.summary.rate || 50000); // only for ordering when there is no rate yet
+    shops.set(e.shop, s);
+  }
+  return [...shops.values()].sort((a, b) => b.value - a.value);
+}
+
+function reviewCard(d) {
+  const shops = uncategorizedShops(d);
+  if (!shops.length) return '';
+  const total = shops.reduce((n, s) => n + s.value, 0);
+  return `
+    <button type="button" class="card review" data-act="review">
+      <span class="review-text"><b>${shops.length} ${shops.length === 1 ? 'comercio' : 'comercios'} sin categoría</b>
+      <span class="note">${crc(total)} de este mes. Tocá para ponerles una.</span></span>
+      <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </button>`;
+}
+
+function sinCategoria(d) {
+  const shops = uncategorizedShops(d);
+  const rows = shops.map((s) => {
+    const amount = [s.crc ? crc(s.crc) : '', s.usd ? usd(s.usd) : ''].filter(Boolean).join(' + ');
+    return `<button type="button" class="item mov tappable" data-act="edit" data-shop="${esc(s.shop)}" data-name="${esc(s.name)}" data-category="" data-sub="" aria-label="${esc(`${s.name}. Elegir categoría`)}">
+          <div class="avatar" aria-hidden="true">${esc(s.name.charAt(0) || '·')}</div>
+          <div class="mov-text"><span class="mov-name">${esc(s.name)}</span><span class="mov-meta">${s.n} ${s.n === 1 ? 'compra' : 'compras'}</span></div>
+          <span class="mov-amt">${esc(amount)}</span></button>`;
+  }).join('');
+  return `
+    ${header('Sin categoría', shops.length ? `${cap(monthName(d.cycle))} · ${shops.length} ${shops.length === 1 ? 'comercio' : 'comercios'}` : cap(monthName(d.cycle)))}
+    ${shops.length
+      ? `<div class="footer-note">Empezá por arriba: son los que más pesan. Cada uno se recuerda para siempre.</div><div class="card">${rows}</div>`
+      : '<div class="card"><div class="item note">Listo: todas las compras de este mes tienen categoría.</div></div>'}
+    <button type="button" class="btn quiet" data-act="clear-filter">Ver todos los movimientos</button>
+    ${syncLine(d)}`;
+}
+
 function movimientos(d) {
+  if (state.filter === 'uncat') return sinCategoria(d);
   const list = [...d.entries].sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
   const days = new Map();
   for (const e of list) {
@@ -369,14 +415,16 @@ function recurrentes(d) {
 
 const SUB_LABELS = { 'Super Base': 'Súper', Telefono: 'Teléfono', 'Carro Mantenimiento': 'Mantenimiento' };
 // Inicio groups by category; Tasa 0 has its own name.
-const CAT_LABELS = { 'Tasa 0': 'Tasa 0', FIJOS: 'Fijos', SUPER: 'Súper', CARRO: 'Carro', PERSONAL: 'Personal', SOCIAL: 'Social', SALUD: 'Salud', MASCOTA: 'Mascota', TRABAJO: 'Trabajo', AHORRO: 'Ahorro' };
+const CAT_LABELS = { 'Tasa 0': 'Tasa 0', SUPER: 'Súper', DIVERSION: 'Diversión' };
+/** Categories are stored in capitals (`TRANSPORTE`) and shown as words (`Transporte`). */
+const catLabel = (cat) => CAT_LABELS[cat] || cap(cat.toLowerCase());
 
 function sheetHtml() {
   const ed = state.edit;
   const taxonomy = (state.data && state.data.taxonomy) || {};
   const groups = Object.entries(taxonomy).map(([cat, subs]) => `
     <div class="pick-group">
-      <div class="group-label"><span>${esc(CAT_LABELS[cat] || cat)}</span></div>
+      <div class="group-label"><span>${esc(catLabel(cat))}</span></div>
       <div class="pick-row">${subs.map((sub) => {
         const current = ed.category === cat && ed.sub === sub;
         return `<button type="button" class="pick ${current ? 'current' : ''}" data-act="pick" data-category="${esc(cat)}" data-sub="${esc(sub)}" ${state.saving ? 'disabled' : ''} aria-pressed="${current}">${esc(SUB_LABELS[sub] || sub)}</button>`;
@@ -394,8 +442,34 @@ function sheetHtml() {
       </div>
       ${ed.error ? `<p class="pill warn">${esc(ed.error)}</p>` : ''}
       ${state.saving ? '<p class="note">Guardando…</p>' : ''}
-      <div class="sheet-body">${groups}</div>
+      <div class="sheet-body">${groups}${ed.adding ? newCategoryForm(taxonomy) : '<div class="pick-group"><button type="button" class="pick add" data-act="add-cat">+ Nueva categoría</button></div>'}</div>
     </section>`;
+}
+
+function newCategoryForm(taxonomy) {
+  const options = Object.keys(taxonomy).map((cat) => `<option value="${esc(cat)}">${esc(catLabel(cat))}</option>`).join('');
+  return `
+    <form id="newcat-form" class="newcat">
+      <div class="group-label"><span>Nueva categoría</span></div>
+      <label class="lbl" for="nc-sub">Nombre</label>
+      <input id="nc-sub" class="field" name="sub" maxlength="40" required autocomplete="off" placeholder="Por ejemplo: Cerámica">
+      <label class="lbl" for="nc-cat">Dentro de</label>
+      <select id="nc-cat" class="field" name="category">${options}<option value="">Un grupo nuevo…</option></select>
+      <input id="nc-new" class="field" name="newcat" maxlength="40" autocomplete="off" placeholder="Nombre del grupo nuevo" aria-label="Nombre del grupo nuevo" hidden>
+      <button class="btn" type="submit">Crear y usar</button>
+    </form>`;
+}
+
+/** Same checks as the engine (core newCategory), so the person hears about a problem at once. */
+function checkNewCategory(taxonomy, category, sub) {
+  const clean = (s) => s.replace(/\s+/g, ' ').trim();
+  const cat = clean(category).toUpperCase();
+  const s = clean(sub);
+  const NAME = /^[^,;/|]{1,40}$/;
+  if (!NAME.test(cat) || !NAME.test(s)) return { error: 'El nombre debe tener entre 1 y 40 letras, sin comas ni barras.' };
+  if (cat === 'TASA 0') return { error: 'Tasa 0 la asigna el estado de cuenta.' };
+  if ((taxonomy[cat] || []).some((e) => e.toLowerCase() === s.toLowerCase())) return { error: 'Esa categoría ya existe.' };
+  return { category: cat, sub: s };
 }
 
 function renderOverlay() {
@@ -409,10 +483,11 @@ function renderOverlay() {
  * Shows the change at once and saves in the background (the engine takes a few seconds).
  * If saving fails, the screen goes back to how it was and says so.
  */
-async function saveCorrection(category, sub) {
+async function saveCorrection(category, sub, create = false) {
   const ed = state.edit;
   const cycle = state.cycle;
   const before = JSON.stringify(state.data);
+  if (create) (state.data.taxonomy[category] = state.data.taxonomy[category] || []).push(sub);
   for (const e of state.data.entries) if (e.shop === ed.shop) { e.category = category; e.sub = sub; }
   state.edit = null;
   state.pending += 1;
@@ -424,7 +499,7 @@ async function saveCorrection(category, sub) {
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ token: load(TOKEN_KEY), action: 'correct', shop: ed.shop, category, sub }),
+      body: JSON.stringify({ token: load(TOKEN_KEY), action: 'correct', shop: ed.shop, category, sub, ...(create ? { create: true } : {}) }),
     });
     const out = await res.json();
     if (!out.ok) failure = out.error === 'unauthorized' ? 'el código de acceso ya no es válido' : out.error;
@@ -487,6 +562,7 @@ document.addEventListener('click', (ev) => {
   const tab = ev.target.closest('.tab');
   if (tab) {
     state.tab = tab.dataset.tab;
+    state.filter = '';
     save('mg-tab', state.tab);
     render();
     window.scrollTo(0, 0);
@@ -501,6 +577,9 @@ document.addEventListener('click', (ev) => {
     return;
   }
   if (a === 'close') { if (!state.saving) { state.edit = null; renderOverlay(); } return; }
+  if (a === 'add-cat') { state.edit.adding = true; state.edit.error = ''; renderOverlay(); document.getElementById('nc-sub')?.focus(); return; }
+  if (a === 'review') { state.tab = 'movimientos'; state.filter = 'uncat'; render(); window.scrollTo(0, 0); return; }
+  if (a === 'clear-filter') { state.filter = ''; render(); window.scrollTo(0, 0); return; }
   if (a === 'pick') {
     if (act.dataset.category === state.edit.category && act.dataset.sub === state.edit.sub) { state.edit = null; renderOverlay(); return; }
     saveCorrection(act.dataset.category, act.dataset.sub);
@@ -517,7 +596,19 @@ document.addEventListener('click', (ev) => {
   refresh();
 });
 
+document.addEventListener('change', (ev) => {
+  if (ev.target.id === 'nc-cat') document.getElementById('nc-new').hidden = ev.target.value !== '';
+});
+
 document.addEventListener('submit', (ev) => {
+  if (ev.target.id === 'newcat-form') {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const checked = checkNewCategory(state.data.taxonomy || {}, String(f.get('category') || f.get('newcat') || ''), String(f.get('sub') || ''));
+    if (checked.error) { state.edit.error = checked.error; renderOverlay(); return; }
+    saveCorrection(checked.category, checked.sub, true);
+    return;
+  }
   if (ev.target.id !== 'token-form') return;
   ev.preventDefault();
   const token = new FormData(ev.target).get('token').toString().trim();
