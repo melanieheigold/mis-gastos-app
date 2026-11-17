@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=14';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=15';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-17 · v14';
+const VERSION = '2026-11-17 · v15';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine, or their whole access code (family)
@@ -109,10 +109,16 @@ function crcValue(e, rate) {
 
 // ---------- data ----------
 
+// The day this person's card statement cuts (1–28, or 31 = last day of the month): their
+// months run from the day after it to the next one. Learned from their engine; 15 until then.
+const CUT_KEY = 'mg-cut';
+const cutDay = () => Number(load(CUT_KEY)) || 15;
+const cutLabel = (day) => (day >= 31 ? 'el último día del mes' : `el ${day}`);
+
 function todayCycle() {
   const d = new Date();
   const y = d.getFullYear(), m = d.getMonth() + 1;
-  return d.getDate() >= 16 ? addMonths(`${y}-${String(m).padStart(2, '0')}`, 1) : `${y}-${String(m).padStart(2, '0')}`;
+  return d.getDate() > cutDay() ? addMonths(`${y}-${String(m).padStart(2, '0')}`, 1) : `${y}-${String(m).padStart(2, '0')}`;
 }
 
 /**
@@ -215,6 +221,15 @@ async function refresh() {
     } else {
       if (data.space) save(SPACE_KEY, data.space);
       delete data.space;
+      if (data.cutDay && data.cutDay !== cutDay()) {
+        // the cut day changed (here or on another phone): "this month" may now be another one
+        save(CUT_KEY, String(data.cutDay));
+        const now = todayCycle();
+        const wasCurrent = state.cycle === state.current;
+        state.current = now;
+        if (wasCurrent && now !== cycle) { state.cycle = now; state.loading = false; return refresh(); }
+        if (state.cycle > now) { state.cycle = now; state.loading = false; return refresh(); }
+      }
       state.data = data;
       state.error = null;
       state.offline = false;
@@ -331,13 +346,39 @@ function inicio(d) {
       <div class="note">Incluye gastos fijos y cuotas. No incluye SINPE ni efectivo.</div>
       ${carriedNote(s)}
       ${s.teSobra === null ? '' : '<button type="button" class="link-btn" data-act="edit-cycle">Cambiar salario o tipo de cambio</button>'}
+      ${familyMode() && d.cutDayChosen ? `<button type="button" class="link-btn" data-act="edit-cut">Cambiar día de corte (ahora ${esc(cutLabel(d.cutDay))})</button>` : ''}
     </section>
+    ${cutCard(d)}
     ${reviewCard(d)}
     <section class="section">
       <div class="section-head"><h2>En qué se fue</h2><span class="note">${crc(total)}</span></div>
       <div class="card">${topRows || '<div class="item note">Todavía no hay gastos en este ciclo.</div>'}</div>
     </section>
+    ${homeScreenHelp()}
     ${syncLine(d)}`;
+}
+
+// An iPhone keeps the home-screen app apart from Safari, so the app added there starts
+// without the code and asks for it. In Safari, offer to copy it: one tap here, paste there.
+const standalone = () => window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+function homeScreenHelp() {
+  if (standalone()) return '';
+  return `
+    <section class="card pad">
+      <div class="note" style="font-size:15px;line-height:21px"><b>Para tenerla como app:</b> tocá Compartir y "Agregar a pantalla de inicio". La primera vez la app te pide un código: copialo aquí y pegalo ahí.</div>
+      <button type="button" class="btn" data-act="copy-code" style="margin-top:12px;width:100%">Copiar mi código</button>
+    </section>`;
+}
+
+async function copyCode() {
+  const code = load(TOKEN_KEY) || load(SPACE_KEY) || '';
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast('Código copiado. Abrí la app de la pantalla de inicio y pegalo.', 5000);
+  } catch {
+    // no clipboard access: show it so it can be copied by hand
+    window.prompt('Copiá este código y pegalo en la app:', code);
+  }
 }
 
 /** Shops with spend but no category, biggest first: the short list worth fixing by hand. */
@@ -352,6 +393,17 @@ function uncategorizedShops(d) {
     shops.set(e.shop, s);
   }
   return [...shops.values()].sort((a, b) => b.value - a.value);
+}
+
+/** Family: until the person says when their card cuts, months run 16th–15th like Melanie's. */
+function cutCard(d) {
+  if (!familyMode() || d.cutDayChosen !== false) return '';
+  return `
+    <button type="button" class="card review" data-act="edit-cut">
+      <span class="review-text"><b>¿Qué día corta tu tarjeta?</b>
+      <span class="note">Así tus meses calzan con tu estado de cuenta. Tocá para elegirlo.</span></span>
+      <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+    </button>`;
 }
 
 function reviewCard(d) {
@@ -673,7 +725,18 @@ function formSheetHtml() {
   const d = state.data;
   const month = cap(monthName(state.cycle));
   let title = '', sub = '', fields = '', extra = '';
-  if (f.kind === 'cycle') {
+  if (f.kind === 'cut') {
+    title = 'Día de corte';
+    sub = 'El día en que cierra tu estado de cuenta';
+    const days = [...Array(28).keys()].map((i) => i + 1);
+    fields = `
+        <label class="lbl" for="f-day">Mi tarjeta corta</label>
+        <select id="f-day" class="field" name="day">
+          ${days.map((n) => `<option value="${n}" ${n === f.day ? 'selected' : ''}>El ${n} de cada mes</option>`).join('')}
+          <option value="31" ${f.day === 31 ? 'selected' : ''}>No sé / prefiero meses normales (del 1 al último día)</option>
+        </select>
+        <p class="note">Lo encontrás en tu estado de cuenta como "fecha de corte". Tus meses van del día siguiente al corte hasta el próximo corte. Si lo cambiás, tus compras se reacomodan solas; no se pierde nada.</p>`;
+  } else if (f.kind === 'cycle') {
     title = month;
     sub = 'Salario y tipo de cambio';
     fields = `
@@ -736,7 +799,9 @@ function formSheetHtml() {
 
 function openForm(kind, key) {
   const d = state.data;
-  if (kind === 'cycle') {
+  if (kind === 'cut') {
+    state.form = { kind, day: d.cutDay || 15, error: '' };
+  } else if (kind === 'cycle') {
     // whole colones for the salary (the field takes digits only); the rate may have decimals
     state.form = { kind, income: d.summary.income === null ? '' : Math.round(d.summary.income / 100).toLocaleString('en-US'), // only a rate typed for this very month is shown: an automatic or carried one must not be saved as typed
       rate: (d.summary.rateSource ? d.summary.rateSource === 'typed' : !d.summary.rateFrom) ? typedAmount(d.summary.rate) : '', error: '' };
@@ -758,6 +823,10 @@ function readForm(form) {
   const f = state.form;
   const v = (k) => String(form.get(k) || '').trim();
   const amountOk = (s) => s !== '' && parseTyped(s) !== null && parseTyped(s) > 0;
+  if (f.kind === 'cut') {
+    f.day = Number(v('day'));
+    return { payload: { action: 'setCutDay', day: f.day }, done: 'Día de corte guardado' };
+  }
   if (f.kind === 'cycle') {
     Object.assign(f, { income: v('income'), rate: v('rate') });
     if (f.income !== '' && parseTyped(f.income) === null) return { error: 'No entendí el salario. Escribilo solo con números, por ejemplo 1,800,000.' };
@@ -910,6 +979,7 @@ document.addEventListener('click', (ev) => {
   const act = ev.target.closest('[data-act]');
   if (!act || act.disabled) return;
   const a = act.dataset.act;
+  if (a === 'copy-code') { copyCode(); return; }
   if (a === 'edit') {
     state.edit = { shop: act.dataset.shop, name: act.dataset.name, category: act.dataset.category, sub: act.dataset.sub, error: '' };
     renderOverlay();
@@ -932,6 +1002,7 @@ document.addEventListener('click', (ev) => {
     return;
   }
   if (a === 'edit-cycle') { openForm('cycle'); return; }
+  if (a === 'edit-cut') { openForm('cut'); return; }
   if (a === 'edit-budget') { openForm('budget', act.dataset.match); return; }
   if (a === 'edit-fixed') { openForm('fixed', act.dataset.desc); return; }
   if (a === 'close-form') { state.form = null; renderOverlay(); return; }
