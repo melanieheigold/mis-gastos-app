@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=11';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=12';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-09 · v11';
+const VERSION = '2026-11-17 · v12';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine
@@ -14,7 +14,7 @@ const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', form: null };
+const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', catFilter: null, picking: false, form: null };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -205,6 +205,14 @@ function syncLine(d) {
   return bits.length ? `<div class="footer-note">${esc(bits.join(' · '))}</div>` : '';
 }
 
+/** A month without its own salary or rate uses the last one entered; say so. */
+function carriedNote(s) {
+  const from = s.incomeFrom || s.rateFrom;
+  if (!from) return '';
+  const what = s.incomeFrom && s.rateFrom ? 'Mismo salario y tipo de cambio' : s.incomeFrom ? 'Mismo salario' : 'Mismo tipo de cambio';
+  return `<div class="note">${what} que en ${esc(monthName(from))}. Cambialo solo si cambió.</div>`;
+}
+
 function inicio(d) {
   const s = d.summary;
   const rate = s.rate;
@@ -231,7 +239,7 @@ function inicio(d) {
     const g = groups.get(cat) || { total: 0, subs: new Map() };
     const v = crcValue(e, rate);
     g.total += v;
-    const sub = subLabel(e);
+    const sub = e.category ? e.sub : '';
     g.subs.set(sub, (g.subs.get(sub) || 0) + v);
     groups.set(cat, g);
   }
@@ -243,7 +251,7 @@ function inicio(d) {
     const label = cat ? catLabel(cat) : 'Sin categoría';
     const open = state.open.has(cat);
     const subs = [...g.subs.entries()].sort((a, b) => b[1] - a[1]);
-    const detail = open ? `<div class="subs">${subs.map(([s, v]) => `<div class="row sub-row"><span>${esc(SUB_LABELS[s] || s)}</span><span>${crc(v)}</span></div>`).join('')}</div>` : '';
+    const detail = open ? `<div class="subs">${subs.map(([s, v]) => `<button type="button" class="row sub-row sub-btn" data-act="set-filter" data-category="${esc(cat)}" data-sub="${esc(s)}" aria-label="${esc(`Ver las compras de ${s ? SUB_LABELS[s] || s : 'sin categoría'}`)}"><span>${esc(s ? SUB_LABELS[s] || s : 'Sin categoría')}</span><span>${crc(v)} ›</span></button>`).join('')}</div>` : '';
     return `
     <div class="item">
       <button type="button" class="cat-btn" data-act="toggle" data-cat="${esc(cat)}" aria-expanded="${open}">
@@ -262,6 +270,7 @@ function inicio(d) {
       <div class="sep"></div>
       <div style="display:flex;flex-direction:column;gap:12px">${rows.join('')}</div>
       <div class="note">Incluye gastos fijos y cuotas. No incluye SINPE ni efectivo.</div>
+      ${carriedNote(s)}
       ${s.teSobra === null ? '' : '<button type="button" class="link-btn" data-act="edit-cycle">Cambiar salario o tipo de cambio</button>'}
     </section>
     ${reviewCard(d)}
@@ -316,9 +325,65 @@ function sinCategoria(d) {
     ${syncLine(d)}`;
 }
 
+const matchesFilter = (e, f) => e.kind === 'spend' && e.category === f.category && (!f.sub || e.sub === f.sub);
+const filterLabel = (f) => (f.sub ? SUB_LABELS[f.sub] || f.sub : `Todo ${catLabel(f.category)}`);
+
+/** The bar above Movimientos: a button to pick a category, or the active filter with its total. */
+function filterBar(d, shown) {
+  const f = state.catFilter;
+  if (!f) return '<button type="button" class="filter-btn" data-act="open-filter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>Filtrar por categoría</button>';
+  const sum = (cur) => shown.filter((e) => e.currency === cur).reduce((n, e) => n + e.minor, 0);
+  const total = [sum('CRC') ? crc(sum('CRC')) : '', sum('USD') ? usd(sum('USD')) : ''].filter(Boolean).join(' + ') || '₡0';
+  return `
+    <div class="card filter-card">
+      <div class="filter-text"><b>${esc(filterLabel(f))}</b><span class="note">${shown.length} ${shown.length === 1 ? 'compra' : 'compras'} · ${esc(total)}</span></div>
+      <button type="button" class="link-btn" data-act="clear-filter">Quitar filtro</button>
+    </div>`;
+}
+
+/** Sheet listing only the categories that have spend this month. */
+function filterSheetHtml() {
+  const d = state.data;
+  const present = new Map();
+  let uncategorized = false;
+  for (const e of d.entries) {
+    if (e.kind !== 'spend') continue;
+    if (!e.category) { uncategorized = true; continue; }
+    if (!present.has(e.category)) present.set(e.category, new Set());
+    present.get(e.category).add(e.sub);
+  }
+  const f = state.catFilter;
+  const pill = (cat, sub, label) => {
+    const on = !!f && f.category === cat && (f.sub || '') === sub;
+    return `<button type="button" class="pick ${on ? 'current' : ''}" data-act="set-filter" data-category="${esc(cat)}" data-sub="${esc(sub)}" aria-pressed="${on}">${esc(label)}</button>`;
+  };
+  const groups = [...present.entries()].sort((a, b) => catLabel(a[0]).localeCompare(catLabel(b[0]))).map(([cat, subs]) => `
+    <div class="pick-group">
+      <div class="pick-label">${esc(catLabel(cat))}</div>
+      <div class="pick-row">${subs.size > 1 ? pill(cat, '', 'Todo') : ''}${[...subs].sort().map((s) => pill(cat, s, SUB_LABELS[s] || s)).join('')}</div>
+    </div>`).join('');
+  return `
+    <div class="backdrop" data-act="close-filter"></div>
+    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="filter-title">
+      <div class="sheet-head">
+        <div class="sheet-title">
+          <h2 id="filter-title">Filtrar</h2>
+          <p class="note">Categorías con compras en ${esc(monthName(state.cycle))}</p>
+        </div>
+        <button type="button" class="icon-btn" data-act="close-filter" aria-label="Cerrar">${ICON_CLOSE}</button>
+      </div>
+      <div class="sheet-body">
+        ${uncategorized ? '<button type="button" class="add-row warn-row" data-act="set-filter" data-category="" data-sub="">Sin categoría</button>' : ''}
+        ${groups || '<p class="note">Todavía no hay compras este mes.</p>'}
+      </div>
+    </section>`;
+}
+
 function movimientos(d) {
   if (state.filter === 'uncat') return sinCategoria(d);
-  const list = [...d.entries].sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
+  const f = state.catFilter;
+  const shown = f ? d.entries.filter((e) => matchesFilter(e, f)) : d.entries;
+  const list = [...shown].sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
   const days = new Map();
   for (const e of list) {
     if (!days.has(e.date)) days.set(e.date, []);
@@ -345,7 +410,9 @@ function movimientos(d) {
   }).join('');
   return `
     ${header('Movimientos', `${cap(monthName(d.cycle))} · ${d.entries.length} movimientos`)}
-    ${groups ? '<div class="footer-note">Tocá una compra para cambiar su categoría.</div>' + groups : '<div class="card"><div class="item note">Todavía no hay movimientos en este ciclo.</div></div>'}
+    ${filterBar(d, shown)}
+    ${groups ? '<div class="footer-note">Tocá una compra para cambiar su categoría.</div>' + groups
+      : `<div class="card"><div class="item note">${f ? 'No hay compras de esa categoría este mes.' : 'Todavía no hay movimientos en este ciclo.'}</div></div>`}
     ${syncLine(d)}`;
 }
 
@@ -515,21 +582,22 @@ function checkNewCategory(taxonomy, category, sub) {
 /** Minor units as a person would type them back: 180000000 → `1,800,000`, 50650 → `506.5`. */
 const typedAmount = (minor) => (minor === null || minor === undefined ? '' : (minor / 100).toLocaleString('en-US', { maximumFractionDigits: 2 }));
 
-/** Same rules as the engine's parseTyped (core/src/money.ts): accepts 1,800,000 · 1.800.000 · 506,5 · 506.50. */
+/** Same rules as the engine's parseTyped (core/src/money.ts): dots and commas mean the same (1,800,000 · 1.800.000 · 1,800.000 · 506,5). */
 function parseTyped(text) {
   const s = String(text).replace(/[₡$\s]/g, '');
-  if (!/^\d[\d.,]*$/.test(s) && !/^[.,]\d{1,2}$/.test(s)) return null;
-  const seps = s.replace(/\d/g, '');
-  let decimalAt = -1;
-  if (seps.length) {
-    const last = Math.max(s.lastIndexOf(','), s.lastIndexOf('.'));
-    const sameKind = seps.split('').every((c) => c === seps[0]);
-    if (!(sameKind && (seps.length > 1 || s.length - last - 1 === 3))) decimalAt = last;
-    if (!sameKind && seps.split(s[last]).length !== 2) return null;
+  if (!/^\d*([.,]\d+)*$/.test(s) || !/\d/.test(s)) return null;
+  const parts = s.split(/[.,]/);
+  const rest = parts.slice(1);
+  let units = parts[0];
+  let cents = '';
+  if (rest.length && rest.every((p) => p.length === 3) && units !== '') {
+    units += rest.join('');
+  } else if (rest.length) {
+    cents = rest[rest.length - 1];
+    const middle = rest.slice(0, -1);
+    if (cents.length > 2 || middle.some((p) => p.length !== 3)) return null;
+    units += middle.join('');
   }
-  const units = (decimalAt < 0 ? s : s.slice(0, decimalAt)).replace(/[.,]/g, '');
-  const cents = decimalAt < 0 ? '' : s.slice(decimalAt + 1);
-  if (cents.length > 2 || /[.,]/.test(cents)) return null;
   const minor = Number(units || 0) * 100 + Number(cents.padEnd(2, '0') || 0);
   return Number.isSafeInteger(minor) ? minor : null;
 }
@@ -551,7 +619,7 @@ function formSheetHtml() {
     sub = 'Salario y tipo de cambio';
     fields = `
         <label class="lbl" for="f-income">Salario del mes, en colones</label>
-        <input id="f-income" class="field" name="income" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 1,800,000" value="${esc(f.income)}">
+        <input id="f-income" class="field" name="income" inputmode="numeric" data-whole autocomplete="off" placeholder="Por ejemplo: 1,800,000" value="${esc(f.income)}">
         <label class="lbl" for="f-rate">Tipo de cambio, colones por dólar</label>
         <input id="f-rate" class="field" name="rate" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 506" value="${esc(f.rate)}">
         <p class="note">El tipo de cambio es el que usás para pagar los dólares de la tarjeta.</p>`;
@@ -564,7 +632,7 @@ function formSheetHtml() {
         <label class="lbl" for="f-match">Para</label>
         <select id="f-match" class="field" name="match">${categoryOptions(d.taxonomy || {}, f.match, { groups: true, taken })}${taken.includes('Tasa 0') ? '' : '<option value="Tasa 0">Tasa 0 (cuotas)</option>'}</select>` : `<input type="hidden" name="match" value="${esc(f.match)}">`}
         <label class="lbl" for="f-limit">Límite, en colones</label>
-        <input id="f-limit" class="field" name="limit" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 100,000" value="${esc(f.limit)}">`;
+        <input id="f-limit" class="field" name="limit" inputmode="numeric" data-whole autocomplete="off" placeholder="Por ejemplo: 100,000" value="${esc(f.limit)}">`;
     extra = isNew ? '' : '<button type="button" class="link-btn danger" data-act="remove-setting">Quitar este presupuesto</button>';
   } else {
     const isNew = !f.original;
@@ -608,10 +676,11 @@ function formSheetHtml() {
 function openForm(kind, key) {
   const d = state.data;
   if (kind === 'cycle') {
-    state.form = { kind, income: typedAmount(d.summary.income), rate: typedAmount(d.summary.rate), error: '' };
+    // whole colones for the salary (the field takes digits only); the rate may have decimals
+    state.form = { kind, income: d.summary.income === null ? '' : Math.round(d.summary.income / 100).toLocaleString('en-US'), rate: typedAmount(d.summary.rate), error: '' };
   } else if (kind === 'budget') {
     const b = (d.budgets || []).find((x) => x.match === key);
-    state.form = b ? { kind, original: b.match, match: b.match, name: b.name, limit: typedAmount(b.limit), error: '' }
+    state.form = b ? { kind, original: b.match, match: b.match, name: b.name, limit: Math.round(b.limit / 100).toLocaleString('en-US'), error: '' }
       : { kind, original: '', match: '', name: '', limit: '', error: '' };
   } else {
     const e = d.entries.find((x) => x.source === 'fixed' && x.description === key);
@@ -686,8 +755,8 @@ async function saveSetting({ payload, done }) {
 function renderOverlay() {
   let $o = document.getElementById('overlay');
   if (!$o) { $o = document.createElement('div'); $o.id = 'overlay'; document.body.appendChild($o); }
-  $o.innerHTML = (state.edit ? sheetHtml() : state.form ? formSheetHtml() : '') + (state.toast ? `<div class="toast" role="status">${esc(state.toast)}</div>` : '');
-  document.body.classList.toggle('locked', !!(state.edit || state.form));
+  $o.innerHTML = (state.edit ? sheetHtml() : state.form ? formSheetHtml() : state.picking ? filterSheetHtml() : '') + (state.toast ? `<div class="toast" role="status">${esc(state.toast)}</div>` : '');
+  document.body.classList.toggle('locked', !!(state.edit || state.form || state.picking));
 }
 
 /**
@@ -775,6 +844,7 @@ document.addEventListener('click', (ev) => {
   if (tab) {
     state.tab = tab.dataset.tab;
     state.filter = '';
+    state.catFilter = null;
     save('mg-tab', state.tab);
     render();
     window.scrollTo(0, 0);
@@ -816,7 +886,20 @@ document.addEventListener('click', (ev) => {
     return;
   }
   if (a === 'review') { state.tab = 'movimientos'; state.filter = 'uncat'; render(); window.scrollTo(0, 0); return; }
-  if (a === 'clear-filter') { state.filter = ''; render(); window.scrollTo(0, 0); return; }
+  if (a === 'clear-filter') { state.filter = ''; state.catFilter = null; render(); window.scrollTo(0, 0); return; }
+  if (a === 'open-filter') { state.picking = true; renderOverlay(); return; }
+  if (a === 'close-filter') { state.picking = false; renderOverlay(); return; }
+  if (a === 'set-filter') {
+    const category = act.dataset.category;
+    state.picking = false;
+    state.tab = 'movimientos';
+    state.filter = category ? '' : 'uncat';
+    state.catFilter = category ? { category, sub: act.dataset.sub || null } : null;
+    save('mg-tab', state.tab);
+    render();
+    window.scrollTo(0, 0);
+    return;
+  }
   if (a === 'pick') {
     if (act.dataset.category === state.edit.category && act.dataset.sub === state.edit.sub) { state.edit = null; renderOverlay(); return; }
     saveCorrection(act.dataset.category, act.dataset.sub);
@@ -868,9 +951,18 @@ document.addEventListener('submit', (ev) => {
 
 window.addEventListener('hashchange', () => takeTokenFromLink() && refresh());
 
+// Whole-colón amounts (salary, budget limit): she types digits only and the commas appear.
+document.addEventListener('input', (ev) => {
+  const el = ev.target;
+  if (!el.matches || !el.matches('input[data-whole]')) return;
+  const digits = el.value.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+  el.value = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+});
+
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && state.edit && !state.saving) { state.edit = null; renderOverlay(); }
   if (ev.key === 'Escape' && state.form) { state.form = null; renderOverlay(); }
+  if (ev.key === 'Escape' && state.picking) { state.picking = false; renderOverlay(); }
 });
 
 document.addEventListener('visibilitychange', () => {
