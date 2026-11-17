@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=12';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=13';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-17 · v12';
+const VERSION = '2026-11-17 · v13';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine
@@ -207,11 +207,18 @@ function syncLine(d) {
 
 /** A month without its own salary or rate uses the last one entered; say so. */
 function carriedNote(s) {
+  const notes = [];
   const from = s.incomeFrom || s.rateFrom;
-  if (!from) return '';
-  const what = s.incomeFrom && s.rateFrom ? 'Mismo salario y tipo de cambio' : s.incomeFrom ? 'Mismo salario' : 'Mismo tipo de cambio';
-  return `<div class="note">${what} que en ${esc(monthName(from))}. Cambialo solo si cambió.</div>`;
+  if (from) {
+    const what = s.incomeFrom && s.rateFrom ? 'Mismo salario y tipo de cambio' : s.incomeFrom ? 'Mismo salario' : 'Mismo tipo de cambio';
+    notes.push(`${what} que en ${esc(monthName(from))}. Cambialo solo si cambió.`);
+  }
+  // the rate nobody typed: fetched every day by the engine
+  if (s.rateSource === 'auto') notes.push(`Tipo de cambio automático: ${rateText(s.rate)} del ${esc(shortDate(s.rateDate))} (${esc(s.rateName)}).`);
+  return notes.map((n) => `<div class="note">${n}</div>`).join('');
 }
+
+const rateText = (minor) => `₡${(minor / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 function inicio(d) {
   const s = d.summary;
@@ -621,8 +628,10 @@ function formSheetHtml() {
         <label class="lbl" for="f-income">Salario del mes, en colones</label>
         <input id="f-income" class="field" name="income" inputmode="numeric" data-whole autocomplete="off" placeholder="Por ejemplo: 1,800,000" value="${esc(f.income)}">
         <label class="lbl" for="f-rate">Tipo de cambio, colones por dólar</label>
-        <input id="f-rate" class="field" name="rate" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 506" value="${esc(f.rate)}">
-        <p class="note">El tipo de cambio es el que usás para pagar los dólares de la tarjeta.</p>`;
+        <input id="f-rate" class="field" name="rate" inputmode="decimal" autocomplete="off" placeholder="${d.summary.autoRate ? `Automático: ${(d.summary.autoRate / 100).toFixed(2)}` : 'Por ejemplo: 506'}" value="${esc(f.rate)}">
+        <p class="note">${d.summary.autoRate
+          ? `Dejalo vacío y se usa el tipo de cambio automático (${rateText(d.summary.autoRate)}), que se actualiza cada día. Escribí uno solo si querés fijarlo para este mes.`
+          : 'El tipo de cambio es el que usás para pagar los dólares de la tarjeta.'}</p>`;
   } else if (f.kind === 'budget') {
     const isNew = !f.original;
     title = isNew ? 'Nuevo presupuesto' : f.name;
@@ -677,7 +686,8 @@ function openForm(kind, key) {
   const d = state.data;
   if (kind === 'cycle') {
     // whole colones for the salary (the field takes digits only); the rate may have decimals
-    state.form = { kind, income: d.summary.income === null ? '' : Math.round(d.summary.income / 100).toLocaleString('en-US'), rate: typedAmount(d.summary.rate), error: '' };
+    state.form = { kind, income: d.summary.income === null ? '' : Math.round(d.summary.income / 100).toLocaleString('en-US'), // only a rate typed for this very month is shown: an automatic or carried one must not be saved as typed
+      rate: (d.summary.rateSource ? d.summary.rateSource === 'typed' : !d.summary.rateFrom) ? typedAmount(d.summary.rate) : '', error: '' };
   } else if (kind === 'budget') {
     const b = (d.budgets || []).find((x) => x.match === key);
     state.form = b ? { kind, original: b.match, match: b.match, name: b.name, limit: Math.round(b.limit / 100).toLocaleString('en-US'), error: '' }
