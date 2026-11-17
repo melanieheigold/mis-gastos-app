@@ -2,13 +2,13 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=13';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=14';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-17 · v13';
+const VERSION = '2026-11-17 · v14';
 
 const TOKEN_KEY = 'mg-token';
-const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine
+const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine, or their whole access code (family)
 const CACHE_KEY = 'mg-cache-v1:'; // + cycle → last good response, for offline
 const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
@@ -136,6 +136,50 @@ async function fetchSnapshot(cycle) {
   }
 }
 
+/**
+ * Two kinds of access. With a token (Melanie's own engine) the app can ask the engine
+ * itself. Family members have only a space: their engine has no public address, so the
+ * app reads Firebase and leaves its changes in the Firebase inbox (engine/src/inbox.ts).
+ */
+const signedIn = () => !!(load(TOKEN_KEY) || load(SPACE_KEY));
+const familyMode = () => !load(TOKEN_KEY) && !!load(SPACE_KEY);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Leaves one command in the inbox and waits for the engine's answer (it looks once a minute). */
+async function sendToInbox(payload) {
+  const base = `${FIRESTORE_BASE}/projects/${FIREBASE.projectId}/databases/(default)/documents/spaces/${load(SPACE_KEY)}/inbox`;
+  const made = await fetch(base, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: { json: { stringValue: JSON.stringify(payload) }, at: { stringValue: new Date().toISOString() } } }),
+  });
+  if (!made.ok) return { ok: false, error: made.status === 403 || made.status === 404 ? 'unauthorized' : `HTTP ${made.status}` };
+  const { name } = await made.json();
+  for (let waited = 0; waited < INBOX_WAIT_MS; waited += INBOX_POLL_MS) {
+    await sleep(INBOX_POLL_MS);
+    try {
+      const res = await fetch(`${FIRESTORE_BASE}/${name}`, { cache: 'no-store' });
+      const result = res.ok ? (await res.json()).fields.result : null;
+      if (result) return JSON.parse(result.stringValue);
+    } catch { /* keep waiting: the command is already safely in the inbox */ }
+  }
+  return { ok: true, later: true }; // it is in the inbox and will be applied; we just stopped watching
+}
+const INBOX_POLL_MS = 4000;
+const INBOX_WAIT_MS = 100000;
+
+/** Sends one change (a category, a budget, the salary…) and returns {ok, error?, later?}. */
+async function sendCommand(payload) {
+  if (familyMode()) return sendToInbox(payload);
+  // text/plain keeps this a simple request (no CORS preflight, which Apps Script can't answer)
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ token: load(TOKEN_KEY), ...payload }),
+  });
+  return res.json();
+}
+
 async function fetchCycle(cycle) {
   const token = load(TOKEN_KEY);
   const url = `${API_URL}?token=${encodeURIComponent(token)}&cycle=${encodeURIComponent(cycle)}`;
@@ -145,7 +189,7 @@ async function fetchCycle(cycle) {
 }
 
 async function refresh() {
-  if (!load(TOKEN_KEY)) return render();
+  if (!signedIn()) return render();
   const cycle = state.cycle;
   const cached = load(CACHE_KEY + cycle);
   if (cached && (!state.data || state.data.cycle !== cycle)) {
@@ -155,7 +199,15 @@ async function refresh() {
   state.loading = true;
   render();
   try {
-    const data = (await fetchSnapshot(cycle)) || (await fetchCycle(cycle));
+    let data = await fetchSnapshot(cycle);
+    if (!data && !load(TOKEN_KEY)) {
+      // family: Firebase is the only source. No copy means the code stopped working
+      // (space cleared by fetchSnapshot), no connection, or a month with nothing in it.
+      if (!load(SPACE_KEY)) data = { ok: false, error: 'unauthorized' };
+      else if (!navigator.onLine) throw new Error('offline');
+      else data = { ok: false, error: 'nodata' };
+    }
+    if (!data) data = await fetchCycle(cycle);
     if (cycle !== state.cycle) return; // user moved on
     if (state.pending) return; // a correction is being saved: keep what the screen shows
     if (!data.ok) {
@@ -214,7 +266,7 @@ function carriedNote(s) {
     notes.push(`${what} que en ${esc(monthName(from))}. Cambialo solo si cambió.`);
   }
   // the rate nobody typed: fetched every day by the engine
-  if (s.rateSource === 'auto') notes.push(`Tipo de cambio automático: ${rateText(s.rate)} del ${esc(shortDate(s.rateDate))} (${esc(s.rateName)}).`);
+  if (s.rateSource === 'auto' && s.rate) notes.push(`Tipo de cambio automático: ${rateText(s.rate)} del ${esc(shortDate(s.rateDate))} (${esc(s.rateName)}).`);
   return notes.map((n) => `<div class="note">${n}</div>`).join('');
 }
 
@@ -738,16 +790,12 @@ async function saveSetting({ payload, done }) {
   const form = state.form;
   state.form = null;
   state.pending += 1;
-  showToast('Guardando…', 15000);
+  showToast(familyMode() ? 'Guardando… puede tardar un minuto' : 'Guardando…', familyMode() ? INBOX_WAIT_MS + 10000 : 15000);
   let failure = '';
   try {
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ token: load(TOKEN_KEY), ...payload }),
-    });
-    const out = await res.json();
+    const out = await sendCommand(payload);
     if (!out.ok) failure = out.error === 'unauthorized' ? 'El código de acceso ya no es válido.' : out.error;
+    else if (out.later) done = 'Guardado. Se va a ver en unos minutos.';
   } catch {
     failure = 'No hay conexión. Probá de nuevo.';
   }
@@ -785,13 +833,7 @@ async function saveCorrection(category, sub, create = false) {
   render();
   let failure = '';
   try {
-    // text/plain keeps this a simple request (no CORS preflight, which Apps Script can't answer)
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ token: load(TOKEN_KEY), action: 'correct', shop: ed.shop, category, sub, ...(create ? { create: true } : {}) }),
-    });
-    const out = await res.json();
+    const out = await sendCommand({ action: 'correct', shop: ed.shop, category, sub, ...(create ? { create: true } : {}) });
     if (!out.ok) failure = out.error === 'unauthorized' ? 'el código de acceso ya no es válido' : out.error;
   } catch {
     failure = 'no hay conexión';
@@ -818,7 +860,7 @@ function setupScreen(message) {
   return `
     <div class="center">
       <h1>mis-gastos</h1>
-      <p class="note" style="font-size:15px;line-height:21px">${esc(message || 'Para ver tus datos, pegá tu código de acceso. Lo encontrás en el correo de configuración o corriendo showToken en el script.')}</p>
+      <p class="note" style="font-size:15px;line-height:21px">${esc(message || 'Para ver tus datos, pegá tu código de acceso. Está en la página donde conectaste tu correo, o en el correo de configuración.')}</p>
       <form id="token-form" style="display:flex;flex-direction:column;gap:10px">
         <label class="lbl" for="token">Código de acceso</label>
         <input id="token" class="field" name="token" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="text" required>
@@ -831,10 +873,15 @@ function render() {
   for (const b of document.querySelectorAll('.tab')) {
     if (b.dataset.tab === state.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   }
-  document.querySelector('.tabbar').hidden = !load(TOKEN_KEY) || state.error === 'unauthorized';
-  if (!load(TOKEN_KEY)) { $screen.innerHTML = setupScreen(); return; }
+  document.querySelector('.tabbar').hidden = !signedIn() || state.error === 'unauthorized';
+  if (!signedIn()) { $screen.innerHTML = setupScreen(); return; }
   if (state.error === 'unauthorized') { $screen.innerHTML = setupScreen('Ese código no funcionó o ya no es válido. Pegá el código actual.'); return; }
   const d = state.data && state.data.cycle === state.cycle ? state.data : null;
+  if (!d && state.error === 'nodata') {
+    // keeps the month arrows, so a month with nothing in it is not a dead end
+    $screen.innerHTML = `${header(cap(monthName(state.cycle)), 'Sin datos')}<section class="card pad"><p class="note" style="font-size:15px;line-height:21px">Todavía no hay nada de este mes. Si acabás de conectar tu correo, esperá un par de minutos.</p><button class="btn" type="button" data-act="retry">Reintentar</button></section>`;
+    return;
+  }
   if (!d) {
     $screen.innerHTML = state.offline || state.error
       ? `<div class="center"><h1>Sin datos</h1><p class="note">${esc(state.error ? `Error: ${state.error}` : 'No hay conexión y todavía no hay datos guardados de este ciclo.')}</p><button class="btn" type="button" data-act="retry">Reintentar</button></div>`
@@ -951,10 +998,9 @@ document.addEventListener('submit', (ev) => {
   }
   if (ev.target.id !== 'token-form') return;
   ev.preventDefault();
-  const token = new FormData(ev.target).get('token').toString().trim();
+  const token = new FormData(ev.target).get('token').toString().replace(/\s+/g, '');
   if (!token) return;
-  save(TOKEN_KEY, token);
-  save(SPACE_KEY, ''); // a new code may come with a new space; the engine will say
+  takeCode(token);
   state.error = null;
   refresh();
 });
@@ -986,11 +1032,21 @@ document.addEventListener('visibilitychange', () => {
 // ---------- start ----------
 
 /** A setup link carries the token in the fragment (#t=…), which is never sent to any server. */
-function takeTokenFromLink() {
-  const m = /[#&]t=([A-Za-z0-9_-]{16,})/.exec(location.hash);
-  if (!m) return false;
-  save(TOKEN_KEY, m[1]);
+/**
+ * A code is either an engine token (64 characters, Melanie's own engine) or a family
+ * member's Firebase space (twice as long): with a space alone the app talks only to Firebase.
+ */
+function takeCode(code) {
+  const isSpace = code.length >= 100;
+  save(TOKEN_KEY, isSpace ? '' : code);
+  save(SPACE_KEY, isSpace ? code : ''); // a token may come with a new space; the engine will say
   state.error = null;
+}
+
+function takeTokenFromLink() {
+  const m = /[#&][ts]=([A-Za-z0-9_-]{16,})/.exec(location.hash);
+  if (!m) return false;
+  takeCode(m[1]);
   history.replaceState(null, '', location.pathname + location.search);
   return true;
 }
