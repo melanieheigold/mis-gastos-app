@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=15';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=17';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-17 · v15';
+const VERSION = '2026-11-17 · v17';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine, or their whole access code (family)
@@ -14,7 +14,7 @@ const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', catFilter: null, picking: false, form: null };
+const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', catFilter: null, picking: false, form: null, query: '', prev: null };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -194,6 +194,24 @@ async function fetchCycle(cycle) {
   return res.json();
 }
 
+/**
+ * The month before the one on screen, for "compared with last month". Loaded quietly
+ * after the main month: from the phone's own copy first, then from Firebase. It is never
+ * asked from the slow engine, and a month that is not there simply shows no comparison.
+ */
+async function loadPrevious(cycle) {
+  const prev = addMonths(cycle, -1);
+  if (state.prev && state.prev.cycle === prev && state.prev.fresh) return;
+  const cached = load(CACHE_KEY + prev);
+  if (cached && !(state.prev && state.prev.cycle === prev)) { state.prev = JSON.parse(cached); if (state.cycle === cycle) render(); }
+  const data = await fetchSnapshot(prev);
+  if (!data || !data.ok || state.cycle !== cycle) return;
+  data.fresh = true;
+  state.prev = data;
+  save(CACHE_KEY + prev, JSON.stringify(data));
+  render();
+}
+
 async function refresh() {
   if (!signedIn()) return render();
   const cycle = state.cycle;
@@ -235,6 +253,7 @@ async function refresh() {
       state.offline = false;
       data.fetchedAt = new Date().toISOString();
       save(CACHE_KEY + cycle, JSON.stringify(data));
+      loadPrevious(cycle);
     }
   } catch {
     state.offline = true;
@@ -287,6 +306,73 @@ function carriedNote(s) {
 
 const rateText = (minor) => `₡${(minor / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const dayNumber = (iso) => Math.round(Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10))) / 86400000);
+function todayIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+/** Money already spoken for before the month starts: fixed expenses and cuotas. */
+const committed = (e) => e.source === 'fixed' || e.source === 'predicted' || e.category === 'Tasa 0';
+
+/**
+ * Only for the month we are in: what is left per day until the cut, and a thin bar of how
+ * much of the month's free money is gone against how much of the month has passed. "Free"
+ * leaves out fixed expenses and cuotas, which are known from day one and would make every
+ * month look overspent on its first day.
+ */
+function paceBlock(d) {
+  const s = d.summary;
+  if (s.teSobra === null || d.cycle !== state.current) return '';
+  const today = todayIso();
+  if (today < d.range[0] || today > d.range[1]) return '';
+  const total = dayNumber(d.range[1]) - dayNumber(d.range[0]) + 1;
+  const left = dayNumber(d.range[1]) - dayNumber(today) + 1; // today counts
+  const passed = total - left;
+  const variable = d.entries.filter((e) => e.kind === 'spend' && !committed(e)).reduce((n, e) => n + crcValue(e, s.rate), 0);
+  const free = s.teSobra + variable; // what there was for the month after fixed expenses and cuotas
+  const days = `${left === 1 ? 'Te queda 1 día' : `Te quedan ${left} días`}`;
+  if (s.teSobra <= 0 || free <= 0) {
+    return `<div class="pace"><div class="pace-line over-text"><b>${days}</b> y ya no queda plata de este mes.</div>
+      <div class="bar pace-bar over"><i style="width:100%"></i><span class="pace-now" style="left:${Math.round((passed / total) * 100)}%"></span></div></div>`;
+  }
+  const used = Math.min(100, Math.round((variable / free) * 100));
+  const time = Math.round((passed / total) * 100);
+  const fast = used > time + 3;
+  return `
+    <div class="pace">
+      <div class="pace-line"><b>${days}</b> · ${crc(Math.floor(s.teSobra / left / 100) * 100)} por día</div>
+      <div class="bar pace-bar ${fast ? 'over' : 'good'}" role="img" aria-label="${esc(`Gastaste ${used}% de lo disponible y pasó ${time}% del mes`)}"><i style="width:${Math.max(2, used)}%"></i><span class="pace-now" style="left:${time}%"></span></div>
+      <div class="small"><span>Gastaste ${used}%</span><span class="${fast ? 'over-text' : ''}">${fast ? 'Vas más rápido que el mes' : 'Vas bien'} · pasó ${time}%</span></div>
+    </div>`;
+}
+
+/**
+ * Spend per category in the month before, counted up to the same day of the month when
+ * the month on screen is still running (so 5 days are compared with 5 days), whole
+ * otherwise. Fixed expenses and cuotas always count. Null when that month is not loaded.
+ */
+function previousTotals(d) {
+  const p = state.prev;
+  if (!p || p.cycle !== addMonths(d.cycle, -1) || !p.entries.some((e) => e.kind === 'spend')) return null;
+  const today = todayIso();
+  const running = d.cycle === state.current && today >= d.range[0] && today <= d.range[1];
+  const upTo = running ? dayNumber(today) - dayNumber(d.range[0]) : Infinity;
+  const totals = new Map();
+  for (const e of p.entries) {
+    if (e.kind !== 'spend') continue;
+    if (!committed(e) && dayNumber(e.date) - dayNumber(p.range[0]) > upTo) continue;
+    totals.set(e.category || '', (totals.get(e.category || '') || 0) + crcValue(e, p.summary.rate));
+  }
+  return { totals, running, name: monthName(p.cycle) };
+}
+
+/** `↑ ₡42,000` in orange (more than last month) or `↓ ₡12,000` in green; nothing under ₡1,000. */
+function deltaTag(now, before) {
+  const diff = now - before;
+  if (Math.abs(diff) < 100000) return '';
+  return `<span class="delta ${diff > 0 ? 'up' : 'down'}">${diff > 0 ? '↑' : '↓'} ${crc(Math.abs(diff))}</span>`;
+}
+
 function inicio(d) {
   const s = d.summary;
   const rate = s.rate;
@@ -321,6 +407,8 @@ function inicio(d) {
   const total = sorted.reduce((n, [, g]) => n + g.total, 0);
   const max = Math.max(1, ...sorted.map(([, g]) => g.total));
   const pct = (v) => (total > 0 ? `${Math.round((v / total) * 100)}%` : '');
+  const before = previousTotals(d);
+  const beforeTotal = before ? [...before.totals.values()].reduce((n, v) => n + v, 0) : 0;
   const topRows = sorted.map(([cat, g]) => {
     const label = cat ? catLabel(cat) : 'Sin categoría';
     const open = state.open.has(cat);
@@ -331,6 +419,7 @@ function inicio(d) {
       <button type="button" class="cat-btn" data-act="toggle" data-cat="${esc(cat)}" aria-expanded="${open}">
         <span class="row"><span class="cat-name ${cat ? '' : 'over-text'}"><svg class="chev ${open ? 'open' : ''}" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>${esc(label)}</span><b>${crc(g.total)} <span class="note pct">${pct(g.total)}</span></b></span>
         <span class="bar"><i style="width:${Math.max(2, Math.round((Math.max(0, g.total) / max) * 100))}%"></i></span>
+        ${before && deltaTag(g.total, before.totals.get(cat) || 0) ? `<span class="small delta-row"><span>${before.running ? `Al mismo día de ${esc(before.name)}` : `En ${esc(before.name)}`}: ${crc(before.totals.get(cat) || 0)}</span>${deltaTag(g.total, before.totals.get(cat) || 0)}</span>` : ''}
       </button>
       ${detail}
     </div>`;
@@ -340,18 +429,20 @@ function inicio(d) {
     ${header(cap(monthName(d.cycle)), `Ciclo ${shortDate(d.range[0])} – ${shortDate(d.range[1])}`)}
     <section class="card pad" aria-label="Te sobra">
       <div><div class="hero-label">Te sobra este mes</div>${hero}</div>
+      ${paceBlock(d)}
       ${statusPill(d)}
       <div class="sep"></div>
       <div style="display:flex;flex-direction:column;gap:12px">${rows.join('')}</div>
       <div class="note">Incluye gastos fijos y cuotas. No incluye SINPE ni efectivo.</div>
       ${carriedNote(s)}
       ${s.teSobra === null ? '' : '<button type="button" class="link-btn" data-act="edit-cycle">Cambiar salario o tipo de cambio</button>'}
-      ${familyMode() && d.cutDayChosen ? `<button type="button" class="link-btn" data-act="edit-cut">Cambiar día de corte (ahora ${esc(cutLabel(d.cutDay))})</button>` : ''}
+      ${familyMode() && d.cutDayChosen ? `<button type="button" class="link-btn" data-act="edit-cut">Cambiar día de corte (ahora ${esc(cutLabel(d.cutDay))}: del ${esc(shortDate(d.range[0]))} al ${esc(shortDate(d.range[1]))})</button>` : ''}
     </section>
     ${cutCard(d)}
     ${reviewCard(d)}
     <section class="section">
       <div class="section-head"><h2>En qué se fue</h2><span class="note">${crc(total)}</span></div>
+      ${before ? `<div class="compare-note">${before.running ? `Comparado con ${esc(before.name)} al mismo día del mes` : `Comparado con ${esc(before.name)}`}: ${crc(beforeTotal)} ${deltaTag(total, beforeTotal)}</div>` : ''}
       <div class="card">${topRows || '<div class="item note">Todavía no hay gastos en este ciclo.</div>'}</div>
     </section>
     ${homeScreenHelp()}
@@ -490,10 +581,32 @@ function filterSheetHtml() {
     </section>`;
 }
 
+/** Lowercase, no accents: "Farmácia" is found by "farmacia". */
+const plain = (s) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+/** Every word typed must appear in the shop's name, its category, or the amount. */
+function matchesQuery(e, query) {
+  const hay = plain([prettyName(e.description), e.description, e.category ? catLabel(e.category) : 'sin categoria', subLabel(e), money(e).replace(/[,₡$]/g, '')].join(' '));
+  return plain(query).split(/\s+/).filter(Boolean).every((w) => hay.includes(w.replace(/[,₡$]/g, '')));
+}
+
 function movimientos(d) {
   if (state.filter === 'uncat') return sinCategoria(d);
   const f = state.catFilter;
   const shown = f ? d.entries.filter((e) => matchesFilter(e, f)) : d.entries;
+  return `
+    ${header('Movimientos', `${cap(monthName(d.cycle))} · ${d.entries.length} movimientos`)}
+    <label class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mov-search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Buscar un comercio" aria-label="Buscar en los movimientos de este mes" value="${esc(state.query)}"></label>
+    ${filterBar(d, shown)}
+    <div id="mov-list">${movList(d)}</div>
+    ${syncLine(d)}`;
+}
+
+/** The list under the search box; redrawn alone while typing so the keyboard stays up. */
+function movList(d) {
+  const f = state.catFilter;
+  const q = state.query.trim();
+  const byCat = f ? d.entries.filter((e) => matchesFilter(e, f)) : d.entries;
+  const shown = q ? byCat.filter((e) => matchesQuery(e, q)) : byCat;
   const list = [...shown].sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
   const days = new Map();
   for (const e of list) {
@@ -519,12 +632,14 @@ function movimientos(d) {
     }).join('');
     return `<div class="section"><div class="group-label"><span>${esc(dayLabel(date))}</span><span>${esc(total)}</span></div><div class="card">${rows}</div></div>`;
   }).join('');
-  return `
-    ${header('Movimientos', `${cap(monthName(d.cycle))} · ${d.entries.length} movimientos`)}
-    ${filterBar(d, shown)}
-    ${groups ? '<div class="footer-note">Tocá una compra para cambiar su categoría.</div>' + groups
-      : `<div class="card"><div class="item note">${f ? 'No hay compras de esa categoría este mes.' : 'Todavía no hay movimientos en este ciclo.'}</div></div>`}
-    ${syncLine(d)}`;
+  if (!groups) return `<div class="card"><div class="item note">${q ? `Nada coincide con "${esc(q)}" en ${esc(monthName(d.cycle))}.` : f ? 'No hay compras de esa categoría este mes.' : 'Todavía no hay movimientos en este ciclo.'}</div></div>`;
+  let found = '';
+  if (q) {
+    const sum = (cur) => shown.filter((e) => e.kind === 'spend' && e.currency === cur).reduce((n, e) => n + e.minor, 0);
+    const total = [sum('CRC') ? crc(sum('CRC')) : '', sum('USD') ? usd(sum('USD')) : ''].filter(Boolean).join(' + ') || '₡0';
+    found = `<div class="footer-note">${shown.length} ${shown.length === 1 ? 'movimiento' : 'movimientos'} · ${esc(total)}</div>`;
+  }
+  return `${found || '<div class="footer-note">Tocá una compra para cambiar su categoría.</div>'}${groups}`;
 }
 
 function presupuesto(d) {
@@ -732,10 +847,10 @@ function formSheetHtml() {
     fields = `
         <label class="lbl" for="f-day">Mi tarjeta corta</label>
         <select id="f-day" class="field" name="day">
-          ${days.map((n) => `<option value="${n}" ${n === f.day ? 'selected' : ''}>El ${n} de cada mes</option>`).join('')}
-          <option value="31" ${f.day === 31 ? 'selected' : ''}>No sé / prefiero meses normales (del 1 al último día)</option>
+          ${days.map((n) => `<option value="${n}" ${n === f.day ? 'selected' : ''}>El ${n} · mi mes va del ${n + 1} al ${n}</option>`).join('')}
+          <option value="31" ${f.day === 31 ? 'selected' : ''}>No sé / meses normales · del 1 al último día</option>
         </select>
-        <p class="note">Lo encontrás en tu estado de cuenta como "fecha de corte". Tus meses van del día siguiente al corte hasta el próximo corte. Si lo cambiás, tus compras se reacomodan solas; no se pierde nada.</p>`;
+        <p class="note">El día de corte es el <b>último</b> día que entra en el estado de cuenta ("fecha de corte"); lo que comprás ese día todavía cuenta en ese mes, y el mes nuevo empieza al día siguiente. Si querés que tu mes <b>empiece</b> el 12, elegí el 11. Si lo cambiás, tus compras se reacomodan solas; no se pierde nada.</p>`;
   } else if (f.kind === 'cycle') {
     title = month;
     sub = 'Salario y tipo de cambio';
@@ -958,6 +1073,12 @@ function render() {
     return;
   }
   const view = { inicio, movimientos, presupuesto, recurrentes }[state.tab];
+  const searching = document.activeElement && document.activeElement.id === 'mov-search' && state.tab === 'movimientos' && state.filter !== 'uncat';
+  if (searching && document.getElementById('mov-list')) {
+    // she is typing in the search box: rebuilding it would drop the keyboard
+    document.getElementById('mov-list').innerHTML = movList(d);
+    return;
+  }
   $screen.innerHTML = view(d);
   // a background refresh must not rebuild the form she is typing in (it would drop her text and the keyboard)
   if (!(state.edit && state.edit.adding) && !state.form) renderOverlay();
@@ -971,6 +1092,7 @@ document.addEventListener('click', (ev) => {
     state.tab = tab.dataset.tab;
     state.filter = '';
     state.catFilter = null;
+    state.query = '';
     save('mg-tab', state.tab);
     render();
     window.scrollTo(0, 0);
@@ -1081,6 +1203,12 @@ window.addEventListener('hashchange', () => takeTokenFromLink() && refresh());
 // Whole-colón amounts (salary, budget limit): she types digits only and the commas appear.
 document.addEventListener('input', (ev) => {
   const el = ev.target;
+  if (el.id === 'mov-search') {
+    state.query = el.value;
+    const list = document.getElementById('mov-list');
+    if (list && state.data) list.innerHTML = movList(state.data);
+    return;
+  }
   if (!el.matches || !el.matches('input[data-whole]')) return;
   const digits = el.value.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
   el.value = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');

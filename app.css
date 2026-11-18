@@ -271,3 +271,24 @@ button.item > .bar { display: block; }
 .add-row.warn-row { border-color: var(--over); color: var(--over); }
 button.sub-btn { width: 100%; min-height: 36px; border: 0; background: transparent; font: inherit; font-size: 14px; color: var(--muted); cursor: pointer; padding: 0; text-align: left; }
 button.sub-btn:active { opacity: 0.6; }
+
+/* v17: pace under "te sobra", comparison with last month, search */
+.pace { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
+.pace-line { font-size: 17px; line-height: 22px; font-variant-numeric: tabular-nums; }
+.pace-bar { position: relative; overflow: visible; height: 6px; }
+.pace-bar > i { border-radius: 3px; }
+.bar.good > i { background: var(--good); }
+/* where the month is today: a small tick across the bar */
+.pace-now { position: absolute; top: -4px; width: 2px; height: 14px; margin-left: -1px; border-radius: 1px; background: var(--text); }
+.delta { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.delta.up { color: var(--over); }
+.delta.down { color: var(--good); }
+.delta-row { margin-top: 2px; }
+.compare-note { font-size: 13px; line-height: 18px; color: var(--muted); padding: 0 4px 8px; }
+.search { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; margin-bottom: 12px; border-radius: 12px; background: var(--track); color: var(--muted); }
+.search svg { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 17px; padding: 10px 0; -webkit-appearance: none; appearance: none; }
+.search input::placeholder { color: var(--muted); }
+.search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.search:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+
