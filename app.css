@@ -303,3 +303,9 @@ button.sub-btn:active { opacity: 0.6; }
 .head { gap: 8px; }
 .head h1 { font-size: clamp(27px, 8.2vw, 34px); }
 
+/* v19: savings goal under "te sobra" */
+.goal { display: flex; flex-direction: column; gap: 6px; }
+.good-text { color: var(--good); font-weight: 600; }
+.goal .small { gap: 12px; align-items: baseline; }
+.goal .small > :last-child { flex: none; text-align: right; }
+

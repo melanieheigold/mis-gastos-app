@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=18';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=19';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-17 · v18';
+const VERSION = '2026-11-17 · v19';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine, or their whole access code (family)
@@ -337,6 +337,29 @@ function todayIso() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+/** What is left to spend: te sobra, minus the monthly savings goal when there is one. */
+const leftToSpend = (s) => (s.savings && s.toSpend !== null && s.toSpend !== undefined ? s.toSpend : s.teSobra);
+
+/** Under "te sobra": the savings goal and whether this month reaches it. */
+function goalBlock(d) {
+  const s = d.summary;
+  const g = s.savings;
+  if (!g || s.teSobra === null) return '';
+  const label = g.currency === 'USD' ? usd(g.minor).replace(/\.00$/, '') : crc(g.minor);
+  if (g.crc === null) return `<div class="goal"><div class="small"><span>Meta de ahorro: ${label} al mes</span><span>falta el tipo de cambio</span></div></div>`;
+  const short = g.crc - s.teSobra; // > 0: the month does not cover the goal
+  const running = d.cycle === state.current;
+  const covered = Math.max(0, Math.min(100, Math.round((Math.max(0, s.teSobra) / g.crc) * 100)));
+  const status = short <= 0
+    ? (running ? 'Vas bien' : 'La cumpliste')
+    : (running ? `Te faltan ${crc(short)}` : `Te faltaron ${crc(short)}`);
+  return `
+    <div class="goal">
+      <div class="small"><span>Meta de ahorro: <b>${label}</b></span><span class="${short > 0 ? 'over-text' : 'good-text'}">${status}</span></div>
+      <div class="bar ${short > 0 ? 'over' : 'good'}" role="img" aria-label="${esc(`Meta de ahorro cubierta al ${covered}%`)}"><i style="width:${Math.max(2, covered)}%"></i></div>
+    </div>`;
+}
+
 /** Money already spoken for before the month starts: fixed expenses and cuotas. */
 const committed = (e) => e.source === 'fixed' || e.source === 'predicted' || e.category === 'Tasa 0';
 
@@ -355,9 +378,10 @@ function paceBlock(d) {
   const left = dayNumber(d.range[1]) - dayNumber(today) + 1; // today counts
   const passed = total - left;
   const variable = d.entries.filter((e) => e.kind === 'spend' && !committed(e)).reduce((n, e) => n + crcValue(e, s.rate), 0);
-  const free = s.teSobra + variable; // what there was for the month after fixed expenses and cuotas
+  const leftNow = leftToSpend(s); // the savings goal is put aside first
+  const free = leftNow + variable; // what there was for the month after fixed expenses, cuotas and savings
   const days = `${left === 1 ? 'Te queda 1 día' : `Te quedan ${left} días`}`;
-  if (s.teSobra <= 0 || free <= 0) {
+  if (leftNow <= 0 || free <= 0) {
     return `<div class="pace"><div class="pace-line over-text"><b>${days}</b> y ya no queda plata de este mes.</div>
       <div class="bar pace-bar over"><i style="width:100%"></i><span class="pace-now" style="left:${Math.round((passed / total) * 100)}%"></span></div></div>`;
   }
@@ -366,7 +390,7 @@ function paceBlock(d) {
   const fast = used > time + 3;
   return `
     <div class="pace">
-      <div class="pace-line"><b>${days}</b> · ${crc(Math.floor(s.teSobra / left / 100) * 100)} por día</div>
+      <div class="pace-line"><b>${days}</b> · ${crc(Math.floor(leftNow / left / 100) * 100)} por día</div>
       <div class="bar pace-bar ${fast ? 'over' : 'good'}" role="img" aria-label="${esc(`Gastaste ${used}% de lo disponible y pasó ${time}% del mes`)}"><i style="width:${Math.max(2, used)}%"></i><span class="pace-now" style="left:${time}%"></span></div>
       <div class="small"><span>Gastaste ${used}%</span><span class="${fast ? 'over-text' : ''}">${fast ? 'Vas más rápido que el mes' : 'Vas bien'} · pasó ${time}%</span></div>
     </div>`;
@@ -408,14 +432,17 @@ function inicio(d) {
     hero = `<div class="hero missing">Falta ${esc(falta)} de ${esc(monthName(d.cycle))}.</div>
       <button type="button" class="btn" data-act="edit-cycle" style="margin-top:12px;width:100%">Agregar</button>`;
   } else {
-    hero = `<div class="hero ${s.teSobra < 0 ? 'neg' : ''}">${crc(s.teSobra)}</div>`;
+    hero = `<div class="hero ${leftToSpend(s) < 0 ? 'neg' : ''}">${crc(leftToSpend(s))}</div>`;
   }
+  const hasGoal = !!s.savings && s.toSpend !== null && s.toSpend !== undefined && s.teSobra !== null;
   const rows = [];
   if (s.income !== null) rows.push(`<div class="row"><span>Salario</span><b>${crc(s.income)}</b></div>`);
   rows.push(`<div class="row"><span>Colones</span><b>${crc(-s.spend.CRC)}</b></div>`);
   if (s.spend.USD) {
     rows.push(`<div class="row"><span>Dólares <span class="note">${usd(s.spend.USD)}${rate ? ` × ${(rate / 100).toLocaleString('en-US')}` : ''}</span></span><b>${s.usdInCrc === null ? '—' : crc(-s.usdInCrc)}</b></div>`);
   }
+
+  if (hasGoal) rows.push(`<div class="row"><span>Meta de ahorro${s.savings.currency === 'USD' ? ` <span class="note">${usd(s.savings.minor)}</span>` : ''}</span><b>${crc(-s.savings.crc)}</b></div>`);
 
   // where it went: every category (so the rows add up to the total), tap for subcategories
   const groups = new Map();
@@ -454,14 +481,16 @@ function inicio(d) {
   return `
     ${header(cap(monthName(d.cycle)), `Ciclo ${shortDate(d.range[0])} – ${shortDate(d.range[1])}`)}
     <section class="card pad" aria-label="Te sobra">
-      <div><div class="hero-label">Te sobra este mes</div>${hero}</div>
+      <div><div class="hero-label">${hasGoal ? 'Te sobra para gastar, ya apartado el ahorro' : 'Te sobra este mes'}</div>${hero}</div>
       ${paceBlock(d)}
+      ${goalBlock(d)}
       ${statusPill(d)}
       <div class="sep"></div>
       <div style="display:flex;flex-direction:column;gap:12px">${rows.join('')}</div>
       <div class="note">Incluye gastos fijos y cuotas. No incluye SINPE ni efectivo.</div>
       ${carriedNote(s)}
       ${s.teSobra === null ? '' : '<button type="button" class="link-btn" data-act="edit-cycle">Cambiar salario o tipo de cambio</button>'}
+      ${s.teSobra === null || s.savings === undefined ? '' : `<button type="button" class="link-btn" data-act="edit-savings">${s.savings ? 'Cambiar meta de ahorro' : 'Poner una meta de ahorro'}</button>`}
       ${familyMode() && d.cutDayChosen ? `<button type="button" class="link-btn" data-act="edit-cut">Cambiar día de corte (ahora ${esc(cutLabel(d.cutDay))}: del ${esc(shortDate(d.range[0]))} al ${esc(shortDate(d.range[1]))})</button>` : ''}
     </section>
     ${cutCard(d)}
@@ -866,7 +895,20 @@ function formSheetHtml() {
   const d = state.data;
   const month = cap(monthName(state.cycle));
   let title = '', sub = '', fields = '', extra = '';
-  if (f.kind === 'cut') {
+  if (f.kind === 'savings') {
+    title = 'Meta de ahorro';
+    sub = 'Lo que querés apartar cada mes';
+    fields = `
+        <label class="lbl" for="f-amount">Cuánto por mes</label>
+        <input id="f-amount" class="field" name="amount" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 100" value="${esc(f.amount)}">
+        <label class="lbl" for="f-currency">En</label>
+        <select id="f-currency" class="field" name="currency">
+          <option value="USD" ${f.currency === 'USD' ? 'selected' : ''}>Dólares</option>
+          <option value="CRC" ${f.currency === 'CRC' ? 'selected' : ''}>Colones</option>
+        </select>
+        <p class="note">Se aparta primero: "te sobra" y lo que podés gastar por día ya lo descuentan. Si un mes no alcanza, la app te dice cuánto falta.</p>`;
+    extra = f.original ? '<button type="button" class="link-btn danger" data-act="remove-setting">Quitar la meta</button>' : '';
+  } else if (f.kind === 'cut') {
     title = 'Día de corte';
     sub = 'El día en que cierra tu estado de cuenta';
     const days = [...Array(28).keys()].map((i) => i + 1);
@@ -940,7 +982,10 @@ function formSheetHtml() {
 
 function openForm(kind, key) {
   const d = state.data;
-  if (kind === 'cut') {
+  if (kind === 'savings') {
+    const g = d.summary.savings;
+    state.form = { kind, original: !!g, amount: g ? typedAmount(g.minor) : '', currency: g ? g.currency : 'USD', error: '' };
+  } else if (kind === 'cut') {
     state.form = { kind, day: d.cutDay || 15, error: '' };
   } else if (kind === 'cycle') {
     // whole colones for the salary (the field takes digits only); the rate may have decimals
@@ -964,6 +1009,11 @@ function readForm(form) {
   const f = state.form;
   const v = (k) => String(form.get(k) || '').trim();
   const amountOk = (s) => s !== '' && parseTyped(s) !== null && parseTyped(s) > 0;
+  if (f.kind === 'savings') {
+    Object.assign(f, { amount: v('amount'), currency: v('currency') });
+    if (!amountOk(f.amount)) return { error: 'Escribí cuánto querés ahorrar por mes, solo con números, por ejemplo 100.' };
+    return { payload: { action: 'setSavings', currency: f.currency, amount: f.amount }, done: 'Meta guardada' };
+  }
   if (f.kind === 'cut') {
     f.day = Number(v('day'));
     return { payload: { action: 'setCutDay', day: f.day }, done: 'Día de corte guardado' };
@@ -991,6 +1041,7 @@ function readForm(form) {
 }
 
 function removalOf(f) {
+  if (f.kind === 'savings') return { payload: { action: 'setSavings', amount: '' }, done: 'Meta quitada' };
   return f.kind === 'budget' ? { payload: { action: 'setBudget', match: f.match, limit: '' }, done: 'Presupuesto quitado' }
     : { payload: { action: 'removeFixed', cycle: state.cycle, description: f.original }, done: 'Gasto fijo quitado' };
 }
@@ -1005,6 +1056,8 @@ function recompute(d) {
   s.missing = [...(s.income === null ? ['income'] : []), ...(s.rate === null ? ['rate'] : [])];
   s.usdInCrc = s.rate === null ? null : Math.round((spend.USD * s.rate) / 100);
   s.teSobra = s.missing.length ? null : s.income - spend.CRC - s.usdInCrc;
+  if (s.savings) s.savings.crc = s.savings.currency === 'CRC' ? s.savings.minor : s.rate === null ? null : Math.round((s.savings.minor * s.rate) / 100);
+  s.toSpend = s.savings && s.savings.crc !== null && s.teSobra !== null ? s.teSobra - s.savings.crc : null;
   for (const b of d.budgets || []) {
     const keys = b.match.split(';').map((k) => k.trim()).filter(Boolean);
     b.spent = d.entries.filter((e) => e.kind === 'spend' && keys.some((k) => k === e.category || k === `${e.category}/${e.sub}`)).reduce((n, e) => n + crcValue(e, s.rate), 0);
@@ -1024,6 +1077,8 @@ function applyLocally(d, p) {
     if (p.income !== '') { s.income = parseTyped(p.income); s.incomeFrom = null; }
     if (p.rate !== '') { s.rate = parseTyped(p.rate); s.rateSource = 'typed'; s.rateFrom = null; }
     else if (s.rateSource === 'typed' && s.autoRate) { s.rate = s.autoRate; s.rateSource = null; } // back to the automatic one; its date comes with the engine's answer
+  } else if (p.action === 'setSavings') {
+    s.savings = p.amount === '' ? null : { currency: p.currency, minor: parseTyped(p.amount), crc: null };
   } else if (p.action === 'setBudget') {
     d.budgets = (d.budgets || []).filter((b) => b.match !== p.match);
     if (p.limit !== '') d.budgets.push({ name: p.name || p.match, match: p.match, limit: parseTyped(p.limit), spent: 0 });
@@ -1200,6 +1255,7 @@ document.addEventListener('click', (ev) => {
   }
   if (a === 'edit-cycle') { openForm('cycle'); return; }
   if (a === 'edit-cut') { openForm('cut'); return; }
+  if (a === 'edit-savings') { openForm('savings'); return; }
   if (a === 'edit-budget') { openForm('budget', act.dataset.match); return; }
   if (a === 'edit-fixed') { openForm('fixed', act.dataset.desc); return; }
   if (a === 'close-form') { state.form = null; renderOverlay(); return; }
