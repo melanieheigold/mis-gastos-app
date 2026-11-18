@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=17';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=18';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-17 · v17';
+const VERSION = '2026-11-17 · v18';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine, or their whole access code (family)
@@ -14,7 +14,7 @@ const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', catFilter: null, picking: false, form: null, query: '', prev: null };
+const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', catFilter: null, picking: false, form: null, query: '', prev: null, syncing: false };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -269,6 +269,7 @@ function header(title, eyebrow, withNav = true) {
   const next = state.cycle < state.current;
   const nav = withNav ? `
     <div class="cycle-nav">
+      ${state.offline ? '' : `<button type="button" class="icon-btn ${state.syncing ? 'spinning' : ''}" data-act="sync-now" aria-label="${state.syncing ? 'Buscando compras nuevas' : 'Actualizar ahora'}" ${state.syncing ? 'disabled' : ''}><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></svg></button>`}
       <button type="button" class="icon-btn" data-act="prev" aria-label="Ciclo anterior"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
       <button type="button" class="icon-btn" data-act="next" aria-label="Ciclo siguiente" ${next ? '' : 'disabled'}><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button>
     </div>` : '';
@@ -288,7 +289,32 @@ function syncLine(d) {
   if (state.offline) bits.push('Sin conexión: datos guardados');
   if (d.lastSync) bits.push(`Correos revisados ${ago(d.lastSync.runAt)}`);
   if (d.lastSync && d.lastSync.error) bits.push('⚠ el último intento falló');
-  return bits.length ? `<div class="footer-note">${esc(bits.join(' · '))}</div>` : '';
+  const button = state.offline ? '' : `<button type="button" class="refresh-btn" data-act="sync-now" ${state.syncing ? 'disabled' : ''}>${state.syncing ? 'Buscando compras nuevas…' : 'Actualizar ahora'}</button>`;
+  return `${button}${bits.length ? `<div class="footer-note">${esc(bits.join(' · '))}</div>` : ''}`;
+}
+
+/** "Actualizar ahora": has the engine read the mailbox right now instead of at its next 15-minute check. */
+async function syncNow() {
+  if (state.syncing) return;
+  state.syncing = true;
+  render();
+  const cycle = state.cycle;
+  const before = state.data && state.data.cycle === cycle ? state.data.entries.length : null;
+  showToast(familyMode() ? 'Buscando compras nuevas… puede tardar un minuto' : 'Buscando compras nuevas…', INBOX_WAIT_MS + 10000);
+  let failure = '', later = false;
+  try {
+    const out = await sendCommand({ action: 'sync' });
+    if (!out.ok) failure = out.error === 'unauthorized' ? 'el código de acceso ya no es válido' : out.error === 'unknown action' ? 'tu conexión todavía no lo permite' : out.error;
+    later = !!out.later;
+  } catch {
+    failure = 'no hay conexión';
+  }
+  state.syncing = false;
+  if (failure) { showToast(`No se pudo actualizar: ${failure}`, 5000); render(); return; }
+  await refresh();
+  const after = state.data && state.data.cycle === cycle ? state.data.entries.length : null;
+  const added = before !== null && after !== null ? after - before : 0;
+  showToast(later ? 'Sigue buscando. Volvé a mirar en un minuto.' : added > 0 ? `${added} ${added === 1 ? 'movimiento nuevo' : 'movimientos nuevos'}` : 'Al día: no hay compras nuevas', 4000);
 }
 
 /** A month without its own salary or rate uses the last one entered; say so. */
@@ -970,11 +996,58 @@ function removalOf(f) {
 }
 
 /** Closes the form, saves in the background, then reloads; on failure the form comes back with the reason. */
+/** Totals of a month recomputed on the phone from its own entries, the way the engine does. */
+function recompute(d) {
+  const s = d.summary;
+  const spend = { CRC: 0, USD: 0 };
+  for (const e of d.entries) if (e.kind === 'spend') spend[e.currency] += e.minor;
+  s.spend = spend;
+  s.missing = [...(s.income === null ? ['income'] : []), ...(s.rate === null ? ['rate'] : [])];
+  s.usdInCrc = s.rate === null ? null : Math.round((spend.USD * s.rate) / 100);
+  s.teSobra = s.missing.length ? null : s.income - spend.CRC - s.usdInCrc;
+  for (const b of d.budgets || []) {
+    const keys = b.match.split(';').map((k) => k.trim()).filter(Boolean);
+    b.spent = d.entries.filter((e) => e.kind === 'spend' && keys.some((k) => k === e.category || k === `${e.category}/${e.sub}`)).reduce((n, e) => n + crcValue(e, s.rate), 0);
+  }
+}
+
+/**
+ * Shows a setting on the screen before the engine confirms it, so saving feels instant.
+ * Returns false for changes the phone cannot work out by itself (the cut day regroups
+ * every month). The engine's answer replaces all of this a moment later.
+ */
+function applyLocally(d, p) {
+  const s = d.summary;
+  if (p.action === 'setCycle') {
+    if (p.cycle !== d.cycle) return false;
+    if (p.income === '' && s.income !== null && !s.incomeFrom) return false; // cleared: only the engine knows what carries over
+    if (p.income !== '') { s.income = parseTyped(p.income); s.incomeFrom = null; }
+    if (p.rate !== '') { s.rate = parseTyped(p.rate); s.rateSource = 'typed'; s.rateFrom = null; }
+    else if (s.rateSource === 'typed' && s.autoRate) { s.rate = s.autoRate; s.rateSource = null; } // back to the automatic one; its date comes with the engine's answer
+  } else if (p.action === 'setBudget') {
+    d.budgets = (d.budgets || []).filter((b) => b.match !== p.match);
+    if (p.limit !== '') d.budgets.push({ name: p.name || p.match, match: p.match, limit: parseTyped(p.limit), spent: 0 });
+  } else if (p.action === 'setFixed' || p.action === 'removeFixed') {
+    const old = (p.original || p.description).trim().toLowerCase();
+    d.entries = d.entries.filter((e) => !(e.source === 'fixed' && e.description.trim().toLowerCase() === old));
+    if (p.action === 'setFixed') d.entries.push({ date: d.range[1], description: p.description, card: '', source: 'fixed', kind: 'spend', currency: p.currency, minor: parseTyped(p.amount), category: p.category, sub: p.sub, shop: null });
+  } else {
+    return false;
+  }
+  recompute(d);
+  return true;
+}
+
 async function saveSetting({ payload, done }) {
   const form = state.form;
   state.form = null;
   state.pending += 1;
-  showToast(familyMode() ? 'Guardando… puede tardar un minuto' : 'Guardando…', familyMode() ? INBOX_WAIT_MS + 10000 : 15000);
+  // shown at once when the phone can work the change out itself; put back if saving fails
+  const cycle = state.cycle;
+  const before = state.data && state.data.cycle === cycle ? JSON.stringify(state.data) : null;
+  const instant = !!before && applyLocally(state.data, payload);
+  if (instant) { showToast(done); render(); }
+  else showToast(familyMode() ? 'Guardando… puede tardar un minuto' : 'Guardando…', familyMode() ? INBOX_WAIT_MS + 10000 : 15000);
   let failure = '';
   try {
     const out = await sendCommand(payload);
@@ -985,11 +1058,12 @@ async function saveSetting({ payload, done }) {
   }
   state.pending -= 1;
   if (failure) {
+    if (instant && state.cycle === cycle) { state.data = JSON.parse(before); render(); }
     state.toast = '';
-    state.form = { ...form, error: failure };
+    state.form = { ...form, error: instant ? `No se guardó: ${failure}` : failure };
     renderOverlay();
   } else {
-    showToast(done);
+    if (!instant) showToast(done);
     refresh();
   }
 }
@@ -1102,6 +1176,7 @@ document.addEventListener('click', (ev) => {
   if (!act || act.disabled) return;
   const a = act.dataset.act;
   if (a === 'copy-code') { copyCode(); return; }
+  if (a === 'sync-now') { syncNow(); return; }
   if (a === 'edit') {
     state.edit = { shop: act.dataset.shop, name: act.dataset.name, category: act.dataset.category, sub: act.dataset.sub, error: '' };
     renderOverlay();

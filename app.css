@@ -292,3 +292,14 @@ button.sub-btn:active { opacity: 0.6; }
 .search input::-webkit-search-cancel-button { -webkit-appearance: none; }
 .search:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* v18: "Actualizar ahora" above the footer line */
+.refresh-btn { display: block; margin: 8px auto 0; min-height: 44px; padding: 0 18px; border: 0; border-radius: 22px; background: var(--track); color: var(--accent); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.refresh-btn:disabled { color: var(--muted); cursor: default; }
+.refresh-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.icon-btn.spinning svg { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .icon-btn.spinning svg { animation: none; opacity: 0.5; } }
+/* three round buttons beside the title now: let the large title give a little on narrow phones */
+.head { gap: 8px; }
+.head h1 { font-size: clamp(27px, 8.2vw, 34px); }
+
