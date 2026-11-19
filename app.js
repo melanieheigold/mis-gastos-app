@@ -2,10 +2,10 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=19';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=20';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-17 · v19';
+const VERSION = '2026-11-18 · v20';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine, or their whole access code (family)
@@ -661,7 +661,18 @@ function movList(d) {
   const f = state.catFilter;
   const q = state.query.trim();
   const byCat = f ? d.entries.filter((e) => matchesFilter(e, f)) : d.entries;
-  const shown = q ? byCat.filter((e) => matchesQuery(e, q)) : byCat;
+  const found = q ? byCat.filter((e) => matchesQuery(e, q)) : byCat;
+  const shown = found.filter((e) => e.kind !== 'removed');
+  // what the person removed: listed apart, greyed, one tap to put back
+  const gone = f ? [] : (q ? d.entries.filter((e) => matchesQuery(e, q)) : d.entries).filter((e) => e.kind === 'removed');
+  const goneRows = gone.map((e) => {
+    const name = prettyName(e.description);
+    return `<button type="button" class="item mov tappable removed" data-act="edit" data-id="${esc(e.id)}" data-removed="1" data-shop="" data-name="${esc(name)}" data-category="" data-sub="" aria-label="${esc(`${name}, quitado. Restaurar`)}">
+          <div class="avatar" aria-hidden="true">${esc(name.charAt(0) || '·')}</div>
+          <div class="mov-text"><span class="mov-name">${esc(name)}</span><span class="mov-meta">${esc(dayLabel(e.date))} · no cuenta</span></div>
+          <span class="mov-amt muted">${esc(money(e))}</span></button>`;
+  }).join('');
+  const goneSection = gone.length ? `<div class="section"><div class="group-label"><span>Quitados (${gone.length})</span><span>tocá para restaurar</span></div><div class="card">${goneRows}</div></div>` : '';
   const list = [...shown].sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
   const days = new Map();
   for (const e of list) {
@@ -682,19 +693,21 @@ function movList(d) {
           <div class="avatar" aria-hidden="true">${esc(name.charAt(0) || '·')}</div>
           <div class="mov-text"><span class="mov-name">${esc(name)}</span><span class="mov-meta ${e.kind === 'spend' && !e.category ? 'over-text' : ''}">${tag ? `${tag.replace('class="tag"', 'class="tag first"')} ` : ''}${esc(meta)}</span></div>
           <span class="mov-amt ${e.kind !== 'spend' ? 'muted' : ''}">${esc(money(e))}</span>`;
-      if (!e.shop) return `<div class="item mov">${inner}</div>`;
-      return `<button type="button" class="item mov tappable" data-act="edit" data-shop="${esc(e.shop)}" data-name="${esc(name)}" data-category="${esc(e.category)}" data-sub="${esc(e.sub)}" aria-label="${esc(`${name}, ${subLabel(e)}. Cambiar categoría`)}">${inner}</button>`;
+      const removable = !!e.id && e.kind === 'spend';
+      if (!e.shop && !removable) return `<div class="item mov">${inner}</div>`;
+      return `<button type="button" class="item mov tappable" data-act="edit" data-id="${esc(removable ? e.id : '')}" data-shop="${esc(e.shop || '')}" data-name="${esc(name)}" data-category="${esc(e.category)}" data-sub="${esc(e.sub)}" aria-label="${esc(`${name}, ${subLabel(e)}. ${e.shop ? 'Cambiar categoría' : 'Opciones'}`)}">${inner}</button>`;
     }).join('');
     return `<div class="section"><div class="group-label"><span>${esc(dayLabel(date))}</span><span>${esc(total)}</span></div><div class="card">${rows}</div></div>`;
   }).join('');
+  if (!groups && goneSection) return goneSection;
   if (!groups) return `<div class="card"><div class="item note">${q ? `Nada coincide con "${esc(q)}" en ${esc(monthName(d.cycle))}.` : f ? 'No hay compras de esa categoría este mes.' : 'Todavía no hay movimientos en este ciclo.'}</div></div>`;
-  let found = '';
+  let foundNote = '';
   if (q) {
     const sum = (cur) => shown.filter((e) => e.kind === 'spend' && e.currency === cur).reduce((n, e) => n + e.minor, 0);
     const total = [sum('CRC') ? crc(sum('CRC')) : '', sum('USD') ? usd(sum('USD')) : ''].filter(Boolean).join(' + ') || '₡0';
-    found = `<div class="footer-note">${shown.length} ${shown.length === 1 ? 'movimiento' : 'movimientos'} · ${esc(total)}</div>`;
+    foundNote = `<div class="footer-note">${shown.length} ${shown.length === 1 ? 'movimiento' : 'movimientos'} · ${esc(total)}</div>`;
   }
-  return `${found || '<div class="footer-note">Tocá una compra para cambiar su categoría.</div>'}${groups}`;
+  return `${foundNote || '<div class="footer-note">Tocá una compra para cambiar su categoría o quitarla.</div>'}${groups}${goneSection}`;
 }
 
 function presupuesto(d) {
@@ -802,18 +815,31 @@ function pickScreen(ed, taxonomy) {
         return `<button type="button" class="pick ${current ? 'current' : ''}" data-act="pick" data-category="${esc(cat)}" data-sub="${esc(sub)}" aria-pressed="${current}">${esc(SUB_LABELS[sub] || sub)}</button>`;
       }).join('')}</div>
     </div>`).join('');
-  return `
+  const head = (note) => `
       <div class="sheet-head">
         <div class="sheet-title">
           <h2 id="sheet-title">${esc(ed.name)}</h2>
-          <p class="note">Vale para todas las compras en este comercio.</p>
+          <p class="note">${note}</p>
         </div>
         <button type="button" class="icon-btn" data-act="close" aria-label="Cerrar">${ICON_CLOSE}</button>
-      </div>
+      </div>`;
+  if (ed.removed) {
+    return `${head('Lo quitaste: no cuenta en tus gastos.')}
+      <div class="sheet-body">
+        <button type="button" class="btn" data-act="restore-entry" style="width:100%">Restaurar este movimiento</button>
+      </div>`;
+  }
+  // one movement, not the whole shop: for a charge that is not yours, a test charge, something paid back to you
+  const remove = ed.id ? `
+        <div class="remove-box">
+          <button type="button" class="link-btn danger" data-act="remove-entry">Quitar este movimiento</button>
+          <p class="note">Solo este, no todo el comercio. Deja de contar en tus gastos y lo podés restaurar desde "Quitados".</p>
+        </div>` : '';
+  return `${head(ed.shop ? 'La categoría vale para todas las compras en este comercio.' : 'Este movimiento lo calcula la app.')}
       ${ed.error ? `<p class="pill warn">${esc(ed.error)}</p>` : ''}
       <div class="sheet-body">
-        <button type="button" class="add-row" data-act="add-cat">+ Nueva categoría</button>
-        ${groups}
+        ${ed.shop ? `<button type="button" class="add-row" data-act="add-cat">+ Nueva categoría</button>${groups}` : ''}
+        ${remove}
       </div>`;
 }
 
@@ -1134,6 +1160,36 @@ function renderOverlay() {
  * Shows the change at once and saves in the background (the engine takes a few seconds).
  * If saving fails, the screen goes back to how it was and says so.
  */
+/** Removes one movement from the month's count, or puts it back. Shown at once; undone with a message if saving fails. */
+async function saveRemoval(remove) {
+  const ed = state.edit;
+  const cycle = state.cycle;
+  const before = JSON.stringify(state.data);
+  const entry = state.data.entries.find((e) => e.id === ed.id);
+  state.edit = null;
+  if (!entry) { renderOverlay(); return; }
+  entry.kind = remove ? 'removed' : 'spend';
+  recompute(state.data);
+  state.pending += 1;
+  showToast(remove ? `${ed.name}: quitado` : `${ed.name}: restaurado`);
+  render();
+  let failure = '';
+  try {
+    const out = await sendCommand({ action: remove ? 'removeEntry' : 'restoreEntry', id: ed.id });
+    if (!out.ok) failure = out.error === 'unauthorized' ? 'el código de acceso ya no es válido' : out.error === 'unknown action' ? 'tu conexión todavía no lo permite' : out.error;
+  } catch {
+    failure = 'no hay conexión';
+  }
+  state.pending -= 1;
+  if (failure) {
+    if (state.cycle === cycle) state.data = JSON.parse(before);
+    showToast(`No se pudo ${remove ? 'quitar' : 'restaurar'} ${ed.name}: ${failure}`, 5000);
+    render();
+  } else {
+    refresh();
+  }
+}
+
 async function saveCorrection(category, sub, create = false) {
   const ed = state.edit;
   const cycle = state.cycle;
@@ -1233,10 +1289,11 @@ document.addEventListener('click', (ev) => {
   if (a === 'copy-code') { copyCode(); return; }
   if (a === 'sync-now') { syncNow(); return; }
   if (a === 'edit') {
-    state.edit = { shop: act.dataset.shop, name: act.dataset.name, category: act.dataset.category, sub: act.dataset.sub, error: '' };
+    state.edit = { shop: act.dataset.shop, id: act.dataset.id || '', removed: act.dataset.removed === '1', name: act.dataset.name, category: act.dataset.category, sub: act.dataset.sub, error: '' };
     renderOverlay();
     return;
   }
+  if (a === 'remove-entry' || a === 'restore-entry') { saveRemoval(a === 'remove-entry'); return; }
   if (a === 'close') { if (!state.saving) { state.edit = null; renderOverlay(); } return; }
   if (a === 'add-cat') { state.edit.adding = true; state.edit.error = ''; renderOverlay(); document.getElementById('nc-sub')?.focus(); return; }
   if (a === 'back') { state.edit.adding = false; state.edit.error = ''; renderOverlay(); return; }

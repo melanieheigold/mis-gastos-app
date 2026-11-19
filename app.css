@@ -309,3 +309,9 @@ button.sub-btn:active { opacity: 0.6; }
 .goal .small { gap: 12px; align-items: baseline; }
 .goal .small > :last-child { flex: none; text-align: right; }
 
+/* v20: removing one movement */
+.remove-box { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--track); display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.remove-box .link-btn.danger { align-self: flex-start; }
+.mov.removed .mov-name, .mov.removed .mov-amt { text-decoration: line-through; color: var(--muted); }
+.mov.removed .avatar { opacity: 0.5; }
+
