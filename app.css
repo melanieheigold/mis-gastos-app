@@ -147,7 +147,7 @@ label.lbl { font-size: 15px; font-weight: 600; }
 /* tab bar */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
   padding: 6px 8px calc(env(safe-area-inset-bottom) + 6px);
   background: var(--bar); border-top: 1px solid var(--line);
   -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
@@ -315,3 +315,16 @@ button.sub-btn:active { opacity: 0.6; }
 .mov.removed .mov-name, .mov.removed .mov-amt { text-decoration: line-through; color: var(--muted); }
 .mov.removed .avatar { opacity: 0.5; }
 
+
+/* viajes */
+.back-link { align-self: flex-start; min-height: 32px; padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-size: 17px; cursor: pointer; }
+.two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; }
+.two-col > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+input[type="date"].field { -webkit-appearance: none; appearance: none; display: block; text-align: left; line-height: 48px; min-width: 0; }
+input[type="date"].field::-webkit-date-and-time-value { text-align: left; }
+.trip-box { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 2px 2px 6px; }
+.trip-box .pick-label { margin: 0; flex: 0 0 100%; }
+.trip-box p.note { margin: 0; flex: 1 1 auto; }
+.trip-box .link-btn { align-self: center; }
+.seg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg-row .pick { justify-content: center; text-align: center; font-weight: 600; }

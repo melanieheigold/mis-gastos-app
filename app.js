@@ -2,19 +2,19 @@
 // (Inicio, Movimientos, Presupuesto, Recurrentes) like design/mockup/Main.dc.html.
 // No framework, no build step: this file is what the phone runs.
 
-import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=20';
+import { API_URL, FIREBASE, FIRESTORE_BASE } from './config.js?v=21';
 
 // Shown at the bottom of Inicio so we can tell which version a phone is running.
-const VERSION = '2026-11-18 · v20';
+const VERSION = '2026-11-22 · v21';
 
 const TOKEN_KEY = 'mg-token';
 const SPACE_KEY = 'mg-space'; // where this person's fast copy lives in Firebase; learned from the engine, or their whole access code (family)
 const CACHE_KEY = 'mg-cache-v1:'; // + cycle → last good response, for offline
-const TABS = ['inicio', 'movimientos', 'presupuesto', 'recurrentes'];
+const TABS = ['inicio', 'movimientos', 'presupuesto', 'viajes', 'recurrentes'];
 const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 const DIAS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', catFilter: null, picking: false, form: null, query: '', prev: null, syncing: false };
+const state = { open: new Set(), tab: 'inicio', cycle: null, current: null, data: null, error: null, loading: false, offline: false, edit: null, saving: false, toast: '', pending: 0, filter: '', catFilter: null, picking: false, form: null, query: '', prev: null, syncing: false, trip: null, tripEdit: null };
 const $screen = document.getElementById('screen');
 
 // ---------- storage (Safari private mode can throw) ----------
@@ -79,6 +79,7 @@ function cardName(card) {
   return `${brand === 'MASTER' ? 'MasterCard' : brand === 'VISA' ? 'Visa' : cap(brand.toLowerCase())} ··${last}`;
 }
 function subLabel(e) {
+  if (e.kind === 'income') return 'Ingreso';
   if (e.kind === 'card-payment') return 'Pago a la tarjeta';
   if (e.kind === 'other-card') return 'Tarjeta adicional · no cuenta';
   if (!e.category) return 'Sin categoría';
@@ -437,6 +438,7 @@ function inicio(d) {
   const hasGoal = !!s.savings && s.toSpend !== null && s.toSpend !== undefined && s.teSobra !== null;
   const rows = [];
   if (s.income !== null) rows.push(`<div class="row"><span>Salario</span><b>${crc(s.income)}</b></div>`);
+  if (s.extraIncome) rows.push(`<div class="row"><span>Otros ingresos</span><b>+${crc(s.extraIncome)}</b></div>`);
   rows.push(`<div class="row"><span>Colones</span><b>${crc(-s.spend.CRC)}</b></div>`);
   if (s.spend.USD) {
     rows.push(`<div class="row"><span>Dólares <span class="note">${usd(s.spend.USD)}${rate ? ` × ${(rate / 100).toLocaleString('en-US')}` : ''}</span></span><b>${s.usdInCrc === null ? '—' : crc(-s.usdInCrc)}</b></div>`);
@@ -495,6 +497,7 @@ function inicio(d) {
     </section>
     ${cutCard(d)}
     ${reviewCard(d)}
+    ${tripCard(d)}
     <section class="section">
       <div class="section-head"><h2>En qué se fue</h2><span class="note">${crc(total)}</span></div>
       ${before ? `<div class="compare-note">${before.running ? `Comparado con ${esc(before.name)} al mismo día del mes` : `Comparado con ${esc(before.name)}`}: ${crc(beforeTotal)} ${deltaTag(total, beforeTotal)}</div>` : ''}
@@ -652,6 +655,7 @@ function movimientos(d) {
     ${header('Movimientos', `${cap(monthName(d.cycle))} · ${d.entries.length} movimientos`)}
     <label class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><input id="mov-search" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Buscar un comercio" aria-label="Buscar en los movimientos de este mes" value="${esc(state.query)}"></label>
     ${filterBar(d, shown)}
+    <button type="button" class="add-row" data-act="add-manual">+ Agregar un gasto o un ingreso</button>
     <div id="mov-list">${movList(d)}</div>
     ${syncLine(d)}`;
 }
@@ -686,16 +690,19 @@ function movList(d) {
     const rows = items.map((e) => {
       const tag = e.source === 'predicted' ? '<span class="tag">estimado</span>'
         : e.source === 'fixed' ? '<span class="tag">fijo</span>'
+        : e.original !== undefined ? '<span class="tag">monto cambiado</span>'
+        : e.source === 'manual' ? '<span class="tag">a mano</span>'
         : '';
       const name = prettyName(e.description);
-      const meta = [subLabel(e), cardName(e.card)].filter(Boolean).join(' · ');
+      const trip = e.trip && tripsOf(d).find((t) => t.id === e.trip);
+      const meta = [trip ? `✈ ${trip.name}` : '', subLabel(e), cardName(e.card)].filter(Boolean).join(' · ');
       const inner = `
           <div class="avatar" aria-hidden="true">${esc(name.charAt(0) || '·')}</div>
           <div class="mov-text"><span class="mov-name">${esc(name)}</span><span class="mov-meta ${e.kind === 'spend' && !e.category ? 'over-text' : ''}">${tag ? `${tag.replace('class="tag"', 'class="tag first"')} ` : ''}${esc(meta)}</span></div>
-          <span class="mov-amt ${e.kind !== 'spend' ? 'muted' : ''}">${esc(money(e))}</span>`;
-      const removable = !!e.id && e.kind === 'spend';
+          <span class="mov-amt ${e.kind === 'income' ? 'good-text' : e.kind !== 'spend' ? 'muted' : ''}">${e.kind === 'income' ? '+' : ''}${esc(money(e))}</span>`;
+      const removable = !!e.id && (e.kind === 'spend' || e.kind === 'income');
       if (!e.shop && !removable) return `<div class="item mov">${inner}</div>`;
-      return `<button type="button" class="item mov tappable" data-act="edit" data-id="${esc(removable ? e.id : '')}" data-shop="${esc(e.shop || '')}" data-name="${esc(name)}" data-category="${esc(e.category)}" data-sub="${esc(e.sub)}" aria-label="${esc(`${name}, ${subLabel(e)}. ${e.shop ? 'Cambiar categoría' : 'Opciones'}`)}">${inner}</button>`;
+      return `<button type="button" class="item mov tappable" data-act="edit" data-id="${esc(removable ? e.id : '')}" data-trip="${esc(e.trip || '')}" data-income="${e.kind === 'income' ? '1' : ''}" data-shop="${esc(e.shop || '')}" data-name="${esc(name)}" data-category="${esc(e.category)}" data-sub="${esc(e.sub)}" aria-label="${esc(`${name}, ${subLabel(e)}. ${e.shop ? 'Cambiar categoría' : 'Opciones'}`)}">${inner}</button>`;
     }).join('');
     return `<div class="section"><div class="group-label"><span>${esc(dayLabel(date))}</span><span>${esc(total)}</span></div><div class="card">${rows}</div></div>`;
   }).join('');
@@ -708,6 +715,233 @@ function movList(d) {
     foundNote = `<div class="footer-note">${shown.length} ${shown.length === 1 ? 'movimiento' : 'movimientos'} · ${esc(total)}</div>`;
   }
   return `${foundNote || '<div class="footer-note">Tocá una compra para cambiar su categoría o quitarla.</div>'}${groups}${goneSection}`;
+}
+
+// ---------- viajes ----------
+// A trip is a second view of purchases that already count in their month: a name, dates
+// and a budget split in parts. Purchases made abroad between the dates join by themselves
+// (the engine knows the country); anything else is added from the movement.
+
+const TRIP_PARTS = ['Vuelos', 'Hospedaje', 'Comida', 'Transporte', 'Compras', 'Otros'];
+// the engine's own first guess (engine/src/trips.ts), repeated here so a purchase added by hand lands in a part at once
+const TRIP_GUESSES = [
+  ['Vuelos', /\b(COPA|AVIANCA|VOLARIS|JETBLUE|SPIRIT|UNITED|DELTA|IBERIA|LATAM|AEROMEXICO|AMERICAN AIR|SANSA|KLM|LUFTHANSA|WINGO|ARAJET|AIR (FRANCE|CANADA|EUROPA)|AIRLINES?|AEROLINEAS?)\b/],
+  ['Hospedaje', /HOTEL|HOSTAL|HOSTEL|AIRBNB|BOOKING|MARRIOTT|HILTON|HYATT|RESORT|LODGE|EXPEDIA|VRBO|\bINN\b/],
+  ['Comida', /REST|CAFE|COFFEE|STARBUCKS|PIZZA|BURGER|MCDONALD|KFC|TACO|GRILL|BAKERY|PANADERIA|SUSHI|FOOD|EATS|DELI|KITCHEN|BAGUETTE|SUBWAY|\b(BAR|SODA)\b/],
+  ['Transporte', /UBER|LYFT|TAXI|CABIFY|METRO|RENT ?A ?CAR|HERTZ|AVIS|ALAMO|PARKING|PARQUEO|PEAJE|TOLL|GASOLIN|SHELL|TRAIN|RAIL|\bBUS\b/],
+  ['Compras', /DUTY|DUTTY|FREE SHOP|STORE|SHOP|MALL|OUTLET|ZARA|NIKE|ADIDAS|TARGET|WALMART|AMAZON|ROSS|MARSHALLS|TIENDA/],
+];
+const guessPart = (description) => (TRIP_GUESSES.find(([, re]) => re.test(String(description).toUpperCase())) || ['Otros'])[0];
+const tripMoney = (minor, currency) => (currency === 'CRC' ? crc(minor) : usd(minor));
+const tripsOf = (d) => (d && d.trips) || [];
+
+function tripDates(t) {
+  const y = t.end.slice(0, 4);
+  return t.start.slice(0, 7) === t.end.slice(0, 7)
+    ? `${Number(t.start.slice(8, 10))} – ${shortDate(t.end)} ${y}`
+    : `${shortDate(t.start)} – ${shortDate(t.end)} ${y}`;
+}
+
+/** Where today falls: before ('Faltan 13 días'), during ('Día 3 de 8') or after the trip. */
+function tripWhen(t) {
+  const today = dayNumber(todayIso());
+  const start = dayNumber(t.start);
+  const end = dayNumber(t.end);
+  if (today < start) return { phase: 'before', text: start - today === 1 ? 'Es mañana' : `Faltan ${start - today} días`, daysLeft: 0 };
+  if (today > end) return { phase: 'after', text: 'Ya pasó', daysLeft: 0 };
+  return { phase: 'during', text: `Día ${today - start + 1} de ${end - start + 1}`, daysLeft: end - today + 1 };
+}
+
+/** Adds a trip's purchases up again on the phone, the way the engine does. */
+function tripTotals(t) {
+  for (const p of t.parts) p.spent = 0;
+  t.unconverted = 0;
+  for (const e of t.entries) {
+    const part = t.parts.find((p) => p.name === e.part);
+    if (e.value === null || e.value === undefined) t.unconverted += 1;
+    else if (part) part.spent += e.value;
+  }
+  t.spent = t.parts.reduce((n, p) => n + p.spent, 0);
+  t.budget = t.parts.reduce((n, p) => n + p.budget, 0);
+}
+
+function tripRow(t) {
+  const over = t.budget > 0 && t.spent > t.budget;
+  const pct = t.budget > 0 ? Math.min(100, Math.round((t.spent / t.budget) * 100)) : 0;
+  const when = tripWhen(t);
+  return `
+      <button type="button" class="item tappable" data-act="open-trip" data-id="${esc(t.id)}" aria-label="${esc(`${t.name}, ${tripDates(t)}. Abrir`)}">
+        <span class="row"><b style="font-weight:600">${esc(t.name)}</b><span class="note" style="font-weight:600">${esc(when.text)}</span></span>
+        <span class="small"><span>${esc(tripDates(t))}</span></span>
+        ${t.budget > 0 ? `<span class="bar thick ${over ? 'over' : ''}"><i style="width:${Math.max(2, pct)}%"></i></span>` : ''}
+        <span class="small"><span>${esc(tripMoney(t.spent, t.currency))} gastado</span><span>${t.budget > 0 ? `de ${esc(tripMoney(t.budget, t.currency))}` : 'sin presupuesto'}</span></span>
+      </button>`;
+}
+
+/** On Inicio: the trip that is running, or the next one within a month. */
+function tripCard(d) {
+  const today = dayNumber(todayIso());
+  const near = tripsOf(d).filter((t) => dayNumber(t.end) >= today && dayNumber(t.start) - today <= 30).sort((a, b) => (a.start < b.start ? -1 : 1))[0];
+  if (!near) return '';
+  return `<section class="section"><div class="section-head"><h2>Viaje</h2></div><div class="card">${tripRow(near)}</div></section>`;
+}
+
+function viajes(d) {
+  const trips = tripsOf(d);
+  const open = state.trip && trips.find((t) => t.id === state.trip);
+  if (open) return tripDetail(d, open);
+  const today = dayNumber(todayIso());
+  const coming = trips.filter((t) => dayNumber(t.end) >= today).sort((a, b) => (a.start < b.start ? -1 : 1));
+  const past = trips.filter((t) => dayNumber(t.end) < today);
+  return `
+    ${header('Viajes', 'Planear y llevar la cuenta', false)}
+    <button type="button" class="add-row" data-act="edit-trip" data-id="">+ Nuevo viaje</button>
+    ${coming.length ? `<div class="card">${coming.map(tripRow).join('')}</div>` : ''}
+    ${past.length ? `<div class="section"><div class="group-label"><span>Anteriores</span></div><div class="card">${past.map(tripRow).join('')}</div></div>` : ''}
+    ${trips.length ? '' : '<div class="card"><div class="item note" style="line-height:20px">Poné el nombre, las fechas y cuánto pensás gastar en vuelos, hospedaje, comida y lo demás. Las compras que hagás fuera de Costa Rica en esas fechas entran solas al viaje.</div></div>'}
+    <div class="footer-note">Un viaje no cambia tu mes: las mismas compras siguen contando en "te sobra" y en tus presupuestos.</div>
+    ${syncLine(d)}`;
+}
+
+function tripDetail(d, t) {
+  const when = tripWhen(t);
+  const left = t.budget - t.spent;
+  const hero = t.budget > 0
+    ? `<div class="hero-label">${left < 0 ? 'Te pasaste del presupuesto del viaje' : 'Te queda para el viaje'}</div><div class="hero ${left < 0 ? 'neg' : ''}">${esc(tripMoney(Math.abs(left), t.currency))}</div>`
+    : `<div class="hero-label">Llevás gastado en el viaje</div><div class="hero">${esc(tripMoney(t.spent, t.currency))}</div>`;
+  let pace = '';
+  if (when.phase === 'during' && t.budget > 0 && left > 0) {
+    pace = `<div class="pace-line">${when.daysLeft === 1 ? 'Es el último día' : `Te quedan ${when.daysLeft} días`} · <b>${esc(tripMoney(Math.round(left / when.daysLeft), t.currency))}</b> por día</div>`;
+  }
+  const parts = t.parts.filter((p) => p.budget > 0 || p.spent > 0).map((p) => {
+    const over = p.budget > 0 && p.spent > p.budget;
+    const pct = p.budget > 0 ? Math.min(100, Math.round((p.spent / p.budget) * 100)) : 0;
+    const note = p.budget === 0 ? 'Sin presupuesto' : over ? `Te pasaste ${tripMoney(p.spent - p.budget, t.currency)}` : `Quedan ${tripMoney(p.budget - p.spent, t.currency)}`;
+    return `
+      <div class="item">
+        <span class="row"><b style="font-weight:600">${esc(p.name)}</b><span class="note ${over ? 'over-text' : ''}" style="font-weight:600">${esc(note)}</span></span>
+        ${p.budget > 0 ? `<span class="bar thick ${over ? 'over' : ''}"><i style="width:${Math.max(2, pct)}%"></i></span>` : ''}
+        <span class="small"><span>${esc(tripMoney(p.spent, t.currency))} gastado</span><span>${p.budget > 0 ? `de ${esc(tripMoney(p.budget, t.currency))}` : ''}</span></span>
+      </div>`;
+  }).join('');
+  const rows = t.entries.map((e) => {
+    const name = prettyName(e.description);
+    return `<button type="button" class="item mov tappable" data-act="trip-entry" data-id="${esc(e.id)}" data-name="${esc(name)}" data-part="${esc(e.part)}" aria-label="${esc(`${name}, ${e.part}. Cambiar`)}">
+          <div class="avatar" aria-hidden="true">${esc(name.charAt(0) || '·')}</div>
+          <div class="mov-text"><span class="mov-name">${esc(name)}</span><span class="mov-meta">${esc(shortDate(e.date))} · ${esc(e.part)}${e.auto ? '' : ' · agregada a mano'}</span></div>
+          <span class="mov-amt">${esc(money(e))}</span></button>`;
+  }).join('');
+  return `
+    <div class="head"><div class="head-text">
+      <button type="button" class="back-link" data-act="close-trip">‹ Viajes</button>
+      <h1>${esc(t.name)}</h1>
+    </div></div>
+    <section class="card pad" aria-label="Presupuesto del viaje">
+      <div>${hero}</div>
+      ${pace}
+      <span class="pill info">${esc(tripDates(t))} · ${esc(when.text)}</span>
+      <div class="sep"></div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        ${t.budget > 0 ? `<div class="row"><span>Presupuesto</span><b>${esc(tripMoney(t.budget, t.currency))}</b></div>` : ''}
+        <div class="row"><span>Gastado</span><b>${esc(tripMoney(t.spent, t.currency))}</b></div>
+      </div>
+      ${t.unconverted ? `<div class="note">${t.unconverted === 1 ? 'Falta sumar 1 compra' : `Faltan sumar ${t.unconverted} compras`} en otra moneda: ese mes no tiene tipo de cambio.</div>` : ''}
+      <button type="button" class="link-btn" data-act="edit-trip" data-id="${esc(t.id)}">Cambiar fechas o presupuesto</button>
+    </section>
+    ${parts ? `<section class="section"><div class="section-head"><h2>Por parte</h2></div><div class="card">${parts}</div></section>` : ''}
+    <section class="section">
+      <div class="section-head"><h2>Compras del viaje</h2><span class="note">${t.entries.length}</span></div>
+      <div class="card">${rows || '<div class="item note" style="line-height:20px">Todavía no hay compras. Las que hagás fuera de Costa Rica en esas fechas entran solas.</div>'}</div>
+    </section>
+    <div class="footer-note">Para agregar algo comprado antes (vuelos, hotel) o en Costa Rica: en Movimientos, tocá la compra y elegí el viaje. Tocá una compra de aquí para cambiarle la parte o sacarla.</div>
+    ${syncLine(d)}`;
+}
+
+/** The sheet for one purchase of a trip: its part, or out of the trip. */
+function tripEntrySheetHtml() {
+  const te = state.tripEdit;
+  return `
+    <div class="backdrop" data-act="close-trip-entry"></div>
+    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div class="sheet-head">
+        <div class="sheet-title"><h2 id="sheet-title">${esc(te.name)}</h2><p class="note">¿En qué parte del viaje va?</p></div>
+        <button type="button" class="icon-btn" data-act="close-trip-entry" aria-label="Cerrar">${ICON_CLOSE}</button>
+      </div>
+      <div class="sheet-body">
+        <div class="pick-row">${TRIP_PARTS.map((p) => `<button type="button" class="pick ${p === te.part ? 'current' : ''}" data-act="trip-part" data-part="${esc(p)}" aria-pressed="${p === te.part}">${esc(p)}</button>`).join('')}</div>
+        <div class="remove-box">
+          <button type="button" class="link-btn danger" data-act="trip-out">Sacar del viaje</button>
+          <p class="note">Sigue contando en tu mes; solo deja de contar en este viaje.</p>
+        </div>
+      </div>
+    </section>`;
+}
+
+/** In a movement's sheet: the trip it is in, or the trips it can be added to. */
+function tripBox(ed) {
+  const trips = tripsOf(state.data);
+  if (!ed.id || !trips.length || ed.income) return '';
+  const inTrip = ed.trip && trips.find((t) => t.id === ed.trip);
+  if (inTrip) {
+    return `
+        <div class="trip-box">
+          <p class="note">Está en el viaje <b>${esc(inTrip.name)}</b>.</p>
+          <button type="button" class="link-btn" data-act="trip-out">Sacar del viaje</button>
+        </div>`;
+  }
+  return `
+        <div class="trip-box">
+          <div class="pick-label">Agregar a un viaje</div>
+          <div class="pick-row">${trips.slice(0, 6).map((t) => `<button type="button" class="pick" data-act="trip-in" data-trip="${esc(t.id)}">${esc(t.name)}</button>`).join('')}</div>
+        </div>`;
+}
+
+/** Moves a purchase in or out of a trip on the phone's own copy (the engine's answer replaces it a moment later). */
+function applyTripChoice(d, id, tripId, part) {
+  const e = d.entries.find((x) => x.id === id);
+  let moved = null;
+  for (const t of tripsOf(d)) {
+    const i = t.entries.findIndex((x) => x.id === id);
+    if (i >= 0) moved = t.entries.splice(i, 1)[0];
+  }
+  if (e) e.trip = tripId || null;
+  const t = tripId && tripsOf(d).find((x) => x.id === tripId);
+  const src = moved || (e && { id, date: e.date, description: e.description, card: e.card, currency: e.currency, minor: e.minor });
+  if (t && src) {
+    const rate = d.summary.rate;
+    const value = src.currency === t.currency ? src.minor : !rate ? null : src.currency === 'USD' ? Math.round((src.minor * rate) / 100) : Math.round((src.minor * 100) / rate);
+    t.entries.push({ ...src, value: moved && moved.value !== undefined && src.currency !== t.currency ? moved.value : value, part: part || (moved && moved.part) || guessPart(src.description), auto: false });
+    t.entries.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  }
+  tripsOf(d).forEach(tripTotals);
+}
+
+/** Puts a purchase in a trip, in another part, or out of it. Shown at once; undone with a message if saving fails. */
+async function saveTripChoice(id, name, tripId, part) {
+  const cycle = state.cycle;
+  const before = JSON.stringify(state.data);
+  const trip = tripsOf(state.data).find((t) => t.id === tripId);
+  applyTripChoice(state.data, id, tripId, part);
+  state.edit = null;
+  state.tripEdit = null;
+  state.pending += 1;
+  showToast(!tripId ? `${name}: fuera del viaje` : part ? `${name}: ${part}` : `${name}: en ${trip ? trip.name : 'el viaje'}`);
+  render();
+  let failure = '';
+  try {
+    const out = await sendCommand({ action: 'tripEntry', id, trip: tripId, part: part || '' });
+    if (!out.ok) failure = out.error === 'unauthorized' ? 'el código de acceso ya no es válido' : out.error === 'unknown action' ? 'tu conexión todavía no lo permite' : out.error;
+  } catch {
+    failure = 'no hay conexión';
+  }
+  state.pending -= 1;
+  if (failure) {
+    if (state.cycle === cycle) state.data = JSON.parse(before);
+    showToast(`No se pudo guardar ${name}: ${failure}`, 5000);
+    render();
+  } else {
+    refresh();
+  }
 }
 
 function presupuesto(d) {
@@ -802,7 +1036,7 @@ function sheetHtml() {
   return `
     <div class="backdrop" data-act="close"></div>
     <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
-      ${ed.adding ? newCategoryScreen(ed, taxonomy) : pickScreen(ed, taxonomy)}
+      ${ed.amounting ? amountScreen(ed) : ed.adding ? newCategoryScreen(ed, taxonomy) : pickScreen(ed, taxonomy)}
     </section>`;
 }
 
@@ -832,15 +1066,82 @@ function pickScreen(ed, taxonomy) {
   // one movement, not the whole shop: for a charge that is not yours, a test charge, something paid back to you
   const remove = ed.id ? `
         <div class="remove-box">
+          <button type="button" class="link-btn" data-act="edit-amount">Cambiar el monto</button>
           <button type="button" class="link-btn danger" data-act="remove-entry">Quitar este movimiento</button>
           <p class="note">Solo este, no todo el comercio. Deja de contar en tus gastos y lo podés restaurar desde "Quitados".</p>
         </div>` : '';
-  return `${head(ed.shop ? 'La categoría vale para todas las compras en este comercio.' : 'Este movimiento lo calcula la app.')}
+  return `${head(ed.shop ? 'La categoría vale para todas las compras en este comercio.' : ed.income ? 'Un ingreso que agregaste a mano.' : 'Este movimiento no cambia de categoría aquí.')}
       ${ed.error ? `<p class="pill warn">${esc(ed.error)}</p>` : ''}
       <div class="sheet-body">
+        ${tripBox(ed)}
         ${ed.shop ? `<button type="button" class="add-row" data-act="add-cat">+ Nueva categoría</button>${groups}` : ''}
         ${remove}
       </div>`;
+}
+
+/** The amount of one movement: her part of a shared bill, or a charge that came wrong. Its own screen, field at the top. */
+function amountScreen(ed) {
+  const e = state.data.entries.find((x) => x.id === ed.id);
+  if (!e) return pickScreen(ed, state.data.taxonomy || {});
+  const changed = e.original !== undefined;
+  return `
+      <div class="sheet-head">
+        <button type="button" class="icon-btn" data-act="back" aria-label="Volver">${ICON_BACK}</button>
+        <div class="sheet-title center-title">
+          <h2 id="sheet-title">Cambiar el monto</h2>
+          <p class="note">${esc(ed.name)}</p>
+        </div>
+        <button type="button" class="icon-btn" data-act="close" aria-label="Cerrar">${ICON_CLOSE}</button>
+      </div>
+      <form id="amount-form" class="newcat">
+        ${ed.error ? `<p class="pill warn">${esc(ed.error)}</p>` : ''}
+        <label class="lbl" for="am-amount">Monto, en ${e.currency === 'CRC' ? 'colones' : 'dólares'}</label>
+        <input id="am-amount" class="field" name="amount" inputmode="decimal" autocomplete="off" enterkeyhint="done" value="${esc(ed.amount !== undefined ? ed.amount : typedAmount(e.minor))}">
+        <p class="note">Solo cambia esta compra, por ejemplo para dejar tu parte de una cuenta compartida. ${changed ? `BAC cobró ${esc(money({ currency: e.currency, minor: e.original }))}.` : 'El monto que cobró BAC queda guardado y lo podés recuperar.'}</p>
+        <button class="btn" type="submit">Guardar</button>
+        ${changed ? '<button type="button" class="link-btn danger" data-act="amount-reset">Volver al monto original</button>' : ''}
+      </form>`;
+}
+
+/** Changes one movement's amount (null = back to what BAC charged). Shown at once; undone with a message if saving fails. */
+async function saveAmount(minor, typed) {
+  const ed = state.edit;
+  const cycle = state.cycle;
+  const before = JSON.stringify(state.data);
+  const e = state.data.entries.find((x) => x.id === ed.id);
+  state.edit = null;
+  if (!e) { renderOverlay(); return; }
+  const charged = e.original !== undefined ? e.original : e.minor;
+  const was = e.minor;
+  e.minor = minor === null ? charged : minor;
+  if (e.minor === charged) delete e.original; else e.original = charged;
+  for (const t of tripsOf(state.data)) {
+    for (const x of t.entries) {
+      if (x.id !== e.id) continue;
+      if (x.value !== null && x.value !== undefined) x.value = x.currency === t.currency ? e.minor : Math.round((x.value * e.minor) / (was || 1));
+      x.minor = e.minor;
+    }
+    tripTotals(t);
+  }
+  recompute(state.data);
+  state.pending += 1;
+  showToast(`${ed.name}: ${money(e)}`);
+  render();
+  let failure = '';
+  try {
+    const out = await sendCommand({ action: 'editEntry', id: ed.id, amount: minor === null ? '' : typed });
+    if (!out.ok) failure = out.error === 'unauthorized' ? 'el código de acceso ya no es válido' : out.error === 'unknown action' ? 'tu conexión todavía no lo permite' : out.error;
+  } catch {
+    failure = 'no hay conexión';
+  }
+  state.pending -= 1;
+  if (failure) {
+    if (state.cycle === cycle) state.data = JSON.parse(before);
+    showToast(`No se pudo cambiar el monto de ${ed.name}: ${failure}`, 5000);
+    render();
+  } else {
+    refresh();
+  }
 }
 
 /** Its own screen, with the fields at the top so the iPhone keyboard never covers them. */
@@ -921,7 +1222,55 @@ function formSheetHtml() {
   const d = state.data;
   const month = cap(monthName(state.cycle));
   let title = '', sub = '', fields = '', extra = '';
-  if (f.kind === 'savings') {
+  if (f.kind === 'manual') {
+    title = 'Agregar';
+    sub = 'Algo que no pasó por tu tarjeta';
+    const isIncome = f.type === 'ingreso';
+    fields = `
+        <div class="pick-row seg-row" role="group" aria-label="Tipo">
+          <button type="button" class="pick ${isIncome ? '' : 'current'}" data-act="manual-kind" data-value="gasto" aria-pressed="${!isIncome}">Gasto</button>
+          <button type="button" class="pick ${isIncome ? 'current' : ''}" data-act="manual-kind" data-value="ingreso" aria-pressed="${isIncome}">Ingreso</button>
+          <input type="hidden" name="type" value="${esc(f.type)}">
+        </div>
+        <label class="lbl" for="f-desc">Qué fue</label>
+        <input id="f-desc" class="field" name="description" maxlength="40" autocomplete="off" placeholder="${isIncome ? 'Por ejemplo: Me pagó Ana' : 'Por ejemplo: Cena que pagó Ana'}" value="${esc(f.description)}">
+        <label class="lbl" for="f-amount">Monto</label>
+        <div class="amount-row">
+          <input id="f-amount" class="field" name="amount" inputmode="decimal" autocomplete="off" placeholder="Por ejemplo: 12,500" value="${esc(f.amount)}">
+          <div class="pick-row" role="group" aria-label="Moneda">
+            <button type="button" class="pick ${f.currency === 'CRC' ? 'current' : ''}" data-act="seg" data-value="CRC" aria-pressed="${f.currency === 'CRC'}">₡</button>
+            <button type="button" class="pick ${f.currency === 'USD' ? 'current' : ''}" data-act="seg" data-value="USD" aria-pressed="${f.currency === 'USD'}">$</button>
+          </div>
+          <input type="hidden" name="currency" value="${esc(f.currency)}">
+        </div>
+        <label class="lbl" for="f-date">Fecha</label>
+        <input id="f-date" class="field" type="date" name="date" value="${esc(f.date)}">
+        <div id="f-cat-box" ${isIncome ? 'hidden' : ''} style="display:${isIncome ? 'none' : 'flex'};flex-direction:column;gap:10px">
+          <label class="lbl" for="f-cat">Categoría</label>
+          <select id="f-cat" class="field" name="category"><option value="">Sin categoría</option>${categoryOptions(d.taxonomy || {}, f.category)}</select>
+        </div>
+        <p class="note" id="f-manual-note">${isIncome ? 'Se suma a lo que te sobra en el mes de esa fecha.' : 'Cuenta como cualquier otra compra, en el mes de esa fecha.'}</p>`;
+  } else if (f.kind === 'trip') {
+    title = f.id ? 'Cambiar viaje' : 'Nuevo viaje';
+    sub = 'Nombre, fechas y cuánto pensás gastar';
+    fields = `
+        <label class="lbl" for="f-name">Nombre</label>
+        <input id="f-name" class="field" name="name" maxlength="40" autocomplete="off" placeholder="Por ejemplo: Panamá" value="${esc(f.name)}">
+        <div class="two-col">
+          <div><label class="lbl" for="f-start">Ida</label><input id="f-start" class="field" type="date" name="start" value="${esc(f.start)}"></div>
+          <div><label class="lbl" for="f-end">Vuelta</label><input id="f-end" class="field" type="date" name="end" value="${esc(f.end)}"></div>
+        </div>
+        <label class="lbl" for="f-currency">Presupuesto en</label>
+        <select id="f-currency" class="field" name="currency">
+          <option value="USD" ${f.currency === 'USD' ? 'selected' : ''}>Dólares</option>
+          <option value="CRC" ${f.currency === 'CRC' ? 'selected' : ''}>Colones</option>
+        </select>
+        <div class="two-col">
+          ${TRIP_PARTS.map((p, i) => `<div><label class="lbl" for="f-part-${i}">${esc(p)}</label><input id="f-part-${i}" class="field" name="part-${i}" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(f.parts[i])}"></div>`).join('')}
+        </div>
+        <p class="note">Dejá vacío lo que no vayás a usar. El presupuesto del viaje es la suma de las partes.</p>`;
+    extra = f.id ? '<button type="button" class="link-btn danger" data-act="remove-setting">Borrar este viaje</button>' : '';
+  } else if (f.kind === 'savings') {
     title = 'Meta de ahorro';
     sub = 'Lo que querés apartar cada mes';
     fields = `
@@ -1008,6 +1357,22 @@ function formSheetHtml() {
 
 function openForm(kind, key) {
   const d = state.data;
+  if (kind === 'manual') {
+    // today when the month on screen is the running one; otherwise that month's last day
+    const today = todayIso();
+    state.form = { kind, type: 'gasto', description: '', amount: '', currency: 'CRC', date: today >= d.range[0] && today <= d.range[1] ? today : d.range[1], category: '', error: '' };
+    renderOverlay();
+    document.getElementById('f-desc')?.focus();
+    return;
+  }
+  if (kind === 'trip') {
+    const t = tripsOf(d).find((x) => x.id === key);
+    state.form = t ? { kind, id: t.id, name: t.name, start: t.start, end: t.end, currency: t.currency, parts: t.parts.map((p) => (p.budget ? typedAmount(p.budget) : '')), error: '' }
+      : { kind, id: '', name: '', start: '', end: '', currency: 'USD', parts: TRIP_PARTS.map(() => ''), error: '' };
+    renderOverlay();
+    if (!t) document.getElementById('f-name')?.focus();
+    return;
+  }
   if (kind === 'savings') {
     const g = d.summary.savings;
     state.form = { kind, original: !!g, amount: g ? typedAmount(g.minor) : '', currency: g ? g.currency : 'USD', error: '' };
@@ -1035,6 +1400,23 @@ function readForm(form) {
   const f = state.form;
   const v = (k) => String(form.get(k) || '').trim();
   const amountOk = (s) => s !== '' && parseTyped(s) !== null && parseTyped(s) > 0;
+  if (f.kind === 'manual') {
+    Object.assign(f, { type: v('type'), description: v('description'), amount: v('amount'), currency: v('currency'), date: v('date'), category: v('category') });
+    if (!f.description) return { error: 'Escribí qué fue.' };
+    if (!amountOk(f.amount)) return { error: 'Escribí el monto solo con números, por ejemplo 12,500.' };
+    if (!f.date) return { error: 'Elegí la fecha.' };
+    const [category = '', sub = ''] = f.type === 'gasto' && f.category ? f.category.split('/') : [];
+    return { payload: { action: 'addManual', kind: f.type, description: f.description, date: f.date, currency: f.currency, amount: f.amount, category, sub }, done: f.type === 'ingreso' ? 'Ingreso agregado' : 'Gasto agregado' };
+  }
+  if (f.kind === 'trip') {
+    Object.assign(f, { name: v('name'), start: v('start'), end: v('end'), currency: v('currency'), parts: TRIP_PARTS.map((_, i) => v(`part-${i}`)) });
+    if (!f.name) return { error: 'Ponele un nombre al viaje.' };
+    if (!f.start || !f.end) return { error: 'Elegí la fecha de ida y la de vuelta.' };
+    if (f.end < f.start) return { error: 'La vuelta no puede ser antes de la ida.' };
+    const bad = f.parts.findIndex((p) => p !== '' && (parseTyped(p) === null || parseTyped(p) < 0));
+    if (bad >= 0) return { error: `No entendí el monto de ${TRIP_PARTS[bad]}. Escribilo solo con números, por ejemplo 300.` };
+    return { payload: { action: 'setTrip', id: f.id, name: f.name, start: f.start, end: f.end, currency: f.currency, budgets: Object.fromEntries(TRIP_PARTS.map((p, i) => [p, f.parts[i]])) }, done: 'Viaje guardado' };
+  }
   if (f.kind === 'savings') {
     Object.assign(f, { amount: v('amount'), currency: v('currency') });
     if (!amountOk(f.amount)) return { error: 'Escribí cuánto querés ahorrar por mes, solo con números, por ejemplo 100.' };
@@ -1067,6 +1449,7 @@ function readForm(form) {
 }
 
 function removalOf(f) {
+  if (f.kind === 'trip') return { payload: { action: 'removeTrip', id: f.id }, done: 'Viaje borrado' };
   if (f.kind === 'savings') return { payload: { action: 'setSavings', amount: '' }, done: 'Meta quitada' };
   return f.kind === 'budget' ? { payload: { action: 'setBudget', match: f.match, limit: '' }, done: 'Presupuesto quitado' }
     : { payload: { action: 'removeFixed', cycle: state.cycle, description: f.original }, done: 'Gasto fijo quitado' };
@@ -1081,7 +1464,8 @@ function recompute(d) {
   s.spend = spend;
   s.missing = [...(s.income === null ? ['income'] : []), ...(s.rate === null ? ['rate'] : [])];
   s.usdInCrc = s.rate === null ? null : Math.round((spend.USD * s.rate) / 100);
-  s.teSobra = s.missing.length ? null : s.income - spend.CRC - s.usdInCrc;
+  s.extraIncome = d.entries.filter((e) => e.kind === 'income').reduce((n, e) => n + crcValue(e, s.rate), 0);
+  s.teSobra = s.missing.length ? null : s.income + s.extraIncome - spend.CRC - s.usdInCrc;
   if (s.savings) s.savings.crc = s.savings.currency === 'CRC' ? s.savings.minor : s.rate === null ? null : Math.round((s.savings.minor * s.rate) / 100);
   s.toSpend = s.savings && s.savings.crc !== null && s.teSobra !== null ? s.teSobra - s.savings.crc : null;
   for (const b of d.budgets || []) {
@@ -1103,6 +1487,24 @@ function applyLocally(d, p) {
     if (p.income !== '') { s.income = parseTyped(p.income); s.incomeFrom = null; }
     if (p.rate !== '') { s.rate = parseTyped(p.rate); s.rateSource = 'typed'; s.rateFrom = null; }
     else if (s.rateSource === 'typed' && s.autoRate) { s.rate = s.autoRate; s.rateSource = null; } // back to the automatic one; its date comes with the engine's answer
+  } else if (p.action === 'addManual') {
+    // in another month than the one on screen: nothing to show here
+    if (p.date < d.range[0] || p.date > d.range[1]) return false;
+    const income = p.kind === 'ingreso';
+    d.entries.push({ id: null, date: p.date, description: p.description, card: '', source: 'manual', kind: income ? 'income' : 'spend', currency: p.currency, minor: parseTyped(p.amount), category: p.category, sub: p.sub, shop: null, trip: null, ...(income ? { income: true } : {}) });
+  } else if (p.action === 'setTrip') {
+    // a new trip shows empty until the engine answers with the purchases that fall in it
+    if (!d.trips) return false;
+    const old = d.trips.find((t) => t.id === p.id);
+    const t = old || { id: '', entries: [], spent: 0, unconverted: 0 };
+    if (old && old.currency !== p.currency) return false; // every purchase changes value: the engine's job
+    Object.assign(t, { name: p.name, start: p.start, end: p.end, currency: p.currency, parts: TRIP_PARTS.map((name) => ({ name, budget: parseTyped(p.budgets[name] || '') || 0, spent: 0 })) });
+    if (!old) d.trips.push(t);
+    tripTotals(t);
+  } else if (p.action === 'removeTrip') {
+    if (!d.trips) return false;
+    d.trips = d.trips.filter((t) => t.id !== p.id);
+    for (const e of d.entries) if (e.trip === p.id) e.trip = null;
   } else if (p.action === 'setSavings') {
     s.savings = p.amount === '' ? null : { currency: p.currency, minor: parseTyped(p.amount), crc: null };
   } else if (p.action === 'setBudget') {
@@ -1152,8 +1554,8 @@ async function saveSetting({ payload, done }) {
 function renderOverlay() {
   let $o = document.getElementById('overlay');
   if (!$o) { $o = document.createElement('div'); $o.id = 'overlay'; document.body.appendChild($o); }
-  $o.innerHTML = (state.edit ? sheetHtml() : state.form ? formSheetHtml() : state.picking ? filterSheetHtml() : '') + (state.toast ? `<div class="toast" role="status">${esc(state.toast)}</div>` : '');
-  document.body.classList.toggle('locked', !!(state.edit || state.form || state.picking));
+  $o.innerHTML = (state.edit ? sheetHtml() : state.tripEdit ? tripEntrySheetHtml() : state.form ? formSheetHtml() : state.picking ? filterSheetHtml() : '') + (state.toast ? `<div class="toast" role="status">${esc(state.toast)}</div>` : '');
+  document.body.classList.toggle('locked', !!(state.edit || state.tripEdit || state.form || state.picking));
 }
 
 /**
@@ -1168,7 +1570,7 @@ async function saveRemoval(remove) {
   const entry = state.data.entries.find((e) => e.id === ed.id);
   state.edit = null;
   if (!entry) { renderOverlay(); return; }
-  entry.kind = remove ? 'removed' : 'spend';
+  entry.kind = remove ? 'removed' : entry.income ? 'income' : 'spend';
   recompute(state.data);
   state.pending += 1;
   showToast(remove ? `${ed.name}: quitado` : `${ed.name}: restaurado`);
@@ -1257,7 +1659,7 @@ function render() {
       : `${header(cap(monthName(state.cycle)), 'Cargando…')}<div class="skeleton"></div><div class="skeleton" style="height:300px"></div>`;
     return;
   }
-  const view = { inicio, movimientos, presupuesto, recurrentes }[state.tab];
+  const view = { inicio, movimientos, presupuesto, viajes, recurrentes }[state.tab];
   const searching = document.activeElement && document.activeElement.id === 'mov-search' && state.tab === 'movimientos' && state.filter !== 'uncat';
   if (searching && document.getElementById('mov-list')) {
     // she is typing in the search box: rebuilding it would drop the keyboard
@@ -1266,7 +1668,7 @@ function render() {
   }
   $screen.innerHTML = view(d);
   // a background refresh must not rebuild the form she is typing in (it would drop her text and the keyboard)
-  if (!(state.edit && state.edit.adding) && !state.form) renderOverlay();
+  if (!(state.edit && (state.edit.adding || state.edit.amounting)) && !state.form) renderOverlay();
 }
 
 // ---------- events ----------
@@ -1278,9 +1680,12 @@ document.addEventListener('click', (ev) => {
     state.filter = '';
     state.catFilter = null;
     state.query = '';
+    state.trip = null;
     save('mg-tab', state.tab);
-    render();
     window.scrollTo(0, 0);
+    // trips are not of one month: always shown from this month's copy, the freshest one
+    if (state.tab === 'viajes' && state.cycle !== state.current) { state.cycle = state.current; refresh(); return; }
+    render();
     return;
   }
   const act = ev.target.closest('[data-act]');
@@ -1289,14 +1694,16 @@ document.addEventListener('click', (ev) => {
   if (a === 'copy-code') { copyCode(); return; }
   if (a === 'sync-now') { syncNow(); return; }
   if (a === 'edit') {
-    state.edit = { shop: act.dataset.shop, id: act.dataset.id || '', removed: act.dataset.removed === '1', name: act.dataset.name, category: act.dataset.category, sub: act.dataset.sub, error: '' };
+    state.edit = { shop: act.dataset.shop, id: act.dataset.id || '', trip: act.dataset.trip || '', income: act.dataset.income === '1', removed: act.dataset.removed === '1', name: act.dataset.name, category: act.dataset.category, sub: act.dataset.sub, error: '' };
     renderOverlay();
     return;
   }
   if (a === 'remove-entry' || a === 'restore-entry') { saveRemoval(a === 'remove-entry'); return; }
   if (a === 'close') { if (!state.saving) { state.edit = null; renderOverlay(); } return; }
   if (a === 'add-cat') { state.edit.adding = true; state.edit.error = ''; renderOverlay(); document.getElementById('nc-sub')?.focus(); return; }
-  if (a === 'back') { state.edit.adding = false; state.edit.error = ''; renderOverlay(); return; }
+  if (a === 'back') { state.edit.adding = false; state.edit.amounting = false; state.edit.error = ''; renderOverlay(); return; }
+  if (a === 'edit-amount') { state.edit.amounting = true; state.edit.error = ''; state.edit.amount = undefined; renderOverlay(); document.getElementById('am-amount')?.select(); return; }
+  if (a === 'amount-reset') { saveAmount(null, ''); return; }
   if (a === 'group') {
     // updated in place, not re-rendered, so what she has typed and the keyboard stay put
     for (const chip of document.querySelectorAll('[data-act="group"]')) {
@@ -1310,13 +1717,43 @@ document.addEventListener('click', (ev) => {
     if (!fresh.hidden) fresh.focus();
     return;
   }
+  if (a === 'open-trip') {
+    state.tab = 'viajes'; state.trip = act.dataset.id; save('mg-tab', state.tab); window.scrollTo(0, 0);
+    if (state.cycle !== state.current) { state.cycle = state.current; refresh(); return; }
+    render();
+    return;
+  }
+  if (a === 'close-trip') { state.trip = null; render(); window.scrollTo(0, 0); return; }
+  if (a === 'edit-trip') { openForm('trip', act.dataset.id); return; }
+  if (a === 'trip-entry') { state.tripEdit = { id: act.dataset.id, name: act.dataset.name, part: act.dataset.part }; renderOverlay(); return; }
+  if (a === 'close-trip-entry') { state.tripEdit = null; renderOverlay(); return; }
+  if (a === 'trip-part') {
+    const te = state.tripEdit;
+    if (act.dataset.part === te.part) { state.tripEdit = null; renderOverlay(); return; }
+    saveTripChoice(te.id, te.name, state.trip, act.dataset.part);
+    return;
+  }
+  if (a === 'trip-in') { saveTripChoice(state.edit.id, state.edit.name, act.dataset.trip, ''); return; }
+  if (a === 'trip-out') { const x = state.tripEdit || state.edit; saveTripChoice(x.id, x.name, '', ''); return; }
+  if (a === 'add-manual') { openForm('manual'); return; }
+  if (a === 'manual-kind') {
+    // switched in place so what she typed and the keyboard stay
+    const income = act.dataset.value === 'ingreso';
+    for (const b of act.parentElement.querySelectorAll('.pick')) { b.classList.toggle('current', b === act); b.setAttribute('aria-pressed', String(b === act)); }
+    act.parentElement.querySelector('input[type=hidden]').value = act.dataset.value;
+    const box = document.getElementById('f-cat-box');
+    box.hidden = income; box.style.display = income ? 'none' : 'flex';
+    document.getElementById('f-desc').placeholder = income ? 'Por ejemplo: Me pagó Ana' : 'Por ejemplo: Cena que pagó Ana';
+    document.getElementById('f-manual-note').textContent = income ? 'Se suma a lo que te sobra en el mes de esa fecha.' : 'Cuenta como cualquier otra compra, en el mes de esa fecha.';
+    return;
+  }
   if (a === 'edit-cycle') { openForm('cycle'); return; }
   if (a === 'edit-cut') { openForm('cut'); return; }
   if (a === 'edit-savings') { openForm('savings'); return; }
   if (a === 'edit-budget') { openForm('budget', act.dataset.match); return; }
   if (a === 'edit-fixed') { openForm('fixed', act.dataset.desc); return; }
   if (a === 'close-form') { state.form = null; renderOverlay(); return; }
-  if (a === 'remove-setting') { saveSetting(removalOf(state.form)); return; }
+  if (a === 'remove-setting') { if (state.form.kind === 'trip') state.trip = null; saveSetting(removalOf(state.form)); return; }
   if (a === 'seg') {
     // currency switch, updated in place so the typed amount and the keyboard stay
     for (const b of act.parentElement.children) { b.classList.toggle('current', b === act); b.setAttribute('aria-pressed', String(b === act)); }
@@ -1370,6 +1807,20 @@ document.addEventListener('submit', (ev) => {
     saveCorrection(checked.category, checked.sub, true);
     return;
   }
+  if (ev.target.id === 'amount-form') {
+    ev.preventDefault();
+    const text = String(new FormData(ev.target).get('amount') || '').trim();
+    const minor = parseTyped(text);
+    if (minor === null || minor <= 0) {
+      state.edit.amount = text;
+      state.edit.error = minor === 0 ? 'El monto debe ser mayor que cero. Si no querés que cuente, quitá el movimiento.' : 'No entendí el monto. Escribilo solo con números, por ejemplo 12,500.';
+      renderOverlay();
+      document.getElementById('am-amount')?.focus();
+      return;
+    }
+    saveAmount(minor, text);
+    return;
+  }
   if (ev.target.id === 'setting-form') {
     ev.preventDefault();
     const read = readForm(new FormData(ev.target));
@@ -1404,6 +1855,7 @@ document.addEventListener('input', (ev) => {
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && state.edit && !state.saving) { state.edit = null; renderOverlay(); }
+  if (ev.key === 'Escape' && state.tripEdit) { state.tripEdit = null; renderOverlay(); }
   if (ev.key === 'Escape' && state.form) { state.form = null; renderOverlay(); }
   if (ev.key === 'Escape' && state.picking) { state.picking = false; renderOverlay(); }
 });
